@@ -1,5 +1,238 @@
-# 389ers
+# RCO Group Manager (389ers)
 
-experimenting with frontends for the 389 directory server 
+Web-based frontend for managing Unix POSIX groups on 389 Directory Server for HPC systems at Oregon State University.
 
-We are group of 20 research computing people and we need to manage the Unix POSIX groups for a high performance computing systems The we have decided that the Enterprise Active Directory should not manage groups for two reasons because number one it is a non compliance system and we are trying to build a compliance system and user authorization needs to happen on a compliance system And number two is resource bottlenecks in the enterprise IT team however we would like to replicate all users user objects from the enterprise IT team and we would also replicate back the group groups and memberships of these groups into the Active Directory server off the Enterprise ITT the groups that are replicated back into the enterprise IT into Active Directory should have a certain should be replicated back in a certain OU and only in that OU that is exclusively manage for that and  And we should configure a certain GID number range that cannot exceeded or you cannot go below that without systems administrator intervention  Who manage these memberships we have for now chosen the 389 directory server because the three 89 directory server can also have nested groups just as Active Directory so there can be almost a one to one mapping   The application architecture is pretty simple a newly compiled 389 directory server should be running as a best dash user system D service on port 10,389 and this port is used for other LDAP servers to pull from it So this service becomes like an an authoritative service for the subset of this enterprise use right so other servers can can connect to this port and download it in read only mode And then we would like to have a web application This web application should have a front end and an API back end and for the API back end we will probably develop CLI tools that connect to it but this is for now out of scope and the front end should be extremely easy to use In one page you should be able to add one user to one or multiple groups you could see which members a group has you could also should also see which members a user is which group a user is member of and you should see in a 2nd page also what the actual membership of that user is when you are resolving all nested groups right and so that is that is very important It should be extremely easy to use and userfriendly extremely extremely extremely extremely It should be able to to filter and search very quickly and so that is what we want to do We also need a Powershell export script that are basically export's all current Active Directory users and groups with all their attributes into an L diff format that we are then importing into this server for our development purposes 
+## 🚀 Quick Start
+
+### Prerequisites
+- Node.js 18+ and npm
+- 389 Directory Server (see BUILD.md)
+- Ports 8088 (API) and 5173 (frontend) available
+
+### Installation
+
+```bash
+# Install dependencies
+npm install
+
+# Start development servers
+npm run dev
+```
+
+### Access the Application
+
+1. Open browser to http://localhost:5173
+2. Login with default credentials:
+   - **Username:** `admin`
+   - **Password:** `changeme`
+
+## 📚 Documentation
+
+- **[BUILD.md](./BUILD.md)** - Building 389 Directory Server from source
+- **[QA.md](./QA.md)** - Complete requirements and Q&A
+- **[CLAUDE.md](./CLAUDE.md)** - Project architecture and guidance
+- **[PYTHON_ISSUES.md](./PYTHON_ISSUES.md)** - Python build issues and solutions
+
+## 🏗️ Architecture
+
+```
+┌─────────────────────┐
+│   React Frontend    │  Port 5173 (dev) - Tailwind CSS
+│  (Vite dev server)  │  Oregon State orange/black theme
+└──────────┬──────────┘
+           │
+           │ HTTP/JSON
+           ▼
+┌─────────────────────┐
+│  Express API Server │  Port 8088
+│  (Node.js/TypeScript)│  Session-based auth
+└──────────┬──────────┘
+           │
+           │ LDAP
+           ▼
+┌─────────────────────┐
+│ 389 Directory Server│  Port 10389
+│  dc=rco,dc=university│  LMDB backend
+└─────────────────────┘
+```
+
+## 🎨 Features
+
+**Current (Demo Mode):**
+- ✅ Login/logout with session management
+- ✅ Group listing with search
+- ✅ Split-panel UI (groups left, details right)
+- ✅ OSU orange/black theming
+- ✅ Mock data for testing
+
+**Coming Soon:**
+- [ ] Real LDAP integration
+- [ ] User search and bulk operations
+- [ ] Group creation and editing
+- [ ] Nested group resolution
+- [ ] Member management
+- [ ] Audit logging
+- [ ] SAML authentication
+
+## 🛠️ Development
+
+### Project Structure
+
+```
+389ers/
+├── src/
+│   ├── server/           # Express API (TypeScript)
+│   │   └── index.ts
+│   └── client/           # React frontend
+│       ├── src/
+│       │   ├── App.tsx
+│       │   ├── components/
+│       │   │   ├── Login.tsx
+│       │   │   └── Dashboard.tsx
+│       │   └── main.tsx
+│       └── index.html
+├── config/
+│   └── config.yaml      # LDAP connection settings
+├── install/             # 389 DS binaries (gitignored)
+└── package.json
+```
+
+### Available Scripts
+
+```bash
+npm run dev          # Start dev servers (frontend + backend)
+npm run dev:server   # Start API server only
+npm run dev:client   # Start frontend only
+npm run build        # Build for production
+npm start            # Run production build
+npm run lint         # Lint TypeScript code
+```
+
+### Configuration
+
+Edit `config/config.yaml`:
+
+```yaml
+server:
+  port: 8088
+  sessionSecret: "change-me-in-production"
+  sessionTimeout: 3600000  # 1 hour
+
+ldap:
+  url: "ldap://localhost:10389"
+  baseDN: "dc=rco,dc=university,dc=edu"
+  bindDN: "cn=Directory Manager"
+  bindPassword: "password"
+```
+
+## 🔐 Security
+
+**Current (Development):**
+- Simple password-based authentication
+- Session cookies (HTTP only)
+- CORS enabled for localhost
+
+**Production TODO:**
+- SAML/SSO integration
+- HTTPS required
+- Secure session secrets
+- Rate limiting
+- Audit logging to file
+
+## 🧪 Testing
+
+```bash
+# Currently using mock data
+# Real LDAP integration coming next
+```
+
+## 📦 Deployment
+
+### systemd User Service
+
+```ini
+[Unit]
+Description=RCO Group Manager
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/dp/gh/389/389ers
+ExecStart=/usr/bin/npm start
+Restart=always
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=default.target
+```
+
+Install:
+```bash
+systemctl --user enable 389ers
+systemctl --user start 389ers
+```
+
+## 🎯 Roadmap
+
+### Phase 1: MVP (Current)
+- [x] Project setup
+- [x] Authentication UI
+- [x] Basic group listing
+- [x] Split-panel layout
+- [ ] Real LDAP integration
+
+### Phase 2: Core Features
+- [ ] Group CRUD operations
+- [ ] User search (virtualized for 100k users)
+- [ ] Member management
+- [ ] Bulk operations
+- [ ] Audit logging
+
+### Phase 3: Advanced
+- [ ] Nested group resolution
+- [ ] managedBy delegation
+- [ ] AD sync monitoring
+- [ ] SAML authentication
+- [ ] Python CLI tools
+
+## 🐛 Known Issues
+
+1. **Python lib389 not installed** - See PYTHON_ISSUES.md for details
+   - CLI tools (dscreate, dsconf) unavailable
+   - Manual LDAP configuration required
+   - Does not affect web app functionality
+
+2. **Mock data only** - Real LDAP integration pending
+
+3. **No instance created** - Need to manually create 389 DS instance
+
+## 🤝 Contributing
+
+1. Follow existing code style (ESLint configured)
+2. Use TypeScript strict mode
+3. Test with both admin and non-admin users
+4. Document new configuration options
+
+## 📄 License
+
+See LICENSE file for details.
+
+## 🏫 Oregon State University
+
+Colors used:
+- **OSU Orange:** #D73F09
+- **OSU Orange Dark:** #B33507
+- **OSU Black:** #000000
+- **OSU Gray:** #4A4A4A
+
+No official OSU branding used per requirements.
+
+## 🔗 Related Projects
+
+- [389 Directory Server](https://github.com/389ds/389-ds-base)
+- [389 Documentation](https://github.com/389ds/389ds.github.io)
+
+---
+
+**Status:** 🟢 Development - Web app functional with mock data
+**Last Updated:** 2026-01-31

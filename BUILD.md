@@ -253,6 +253,17 @@ make -j$(nproc)
 make install
 ```
 
+## Python lib389 Issues
+
+⚠️ **Note:** We encountered Python build issues when trying to install lib389 CLI tools. See [PYTHON_ISSUES.md](./PYTHON_ISSUES.md) for details.
+
+**Summary:**
+- Python-ldap failed to build (missing clang, Python 3.14t compatibility)
+- lib389 CLI tools (dscreate, dsconf, etc.) not installed
+- **This is OK** - Web app doesn't need lib389
+- Server binaries (ns-slapd) work perfectly
+- Manual LDAP configuration available as workaround
+
 ## Troubleshooting
 
 **Missing cargo/rustc:**
@@ -264,6 +275,16 @@ source $HOME/.cargo/env
 ```bash
 # Run configure to see what's missing
 ./configure --enable-debug --with-openldap --prefix=/path/to/install 2>&1 | grep -i "not found"
+```
+
+**Python version issues:**
+```bash
+# Use standard Python 3.12, not experimental 3.14t
+python3 --version
+# Should show 3.12.x
+
+# If lib389 needed (optional):
+sudo apt-get install python3-lib389
 ```
 
 **Build directory pollution:**
