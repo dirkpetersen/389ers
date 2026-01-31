@@ -52,7 +52,7 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
           <div className="flex justify-between items-center h-16">
             <div>
               <h1 className="text-xl font-bold">RCO Group Manager</h1>
-              <p className="text-xs text-gray-300">Oregon State University</p>
+              <p className="text-xs text-gray-300">My lovely University</p>
             </div>
             <div className="flex items-center space-x-4">
               <div className="text-right">

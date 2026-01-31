@@ -103,7 +103,7 @@ A: 1 hour
 ## UI Design
 
 **Q: Color scheme preference?**
-A: Oregon State orange/black theming (no official OSU logo/branding).
+A: My lovely University orange/black theming (no official university logo/branding).
 
 **Q: Main page interface style?**
 A: Split-panel with search-centric design. Groups on left, details on right. Search-first but also allows browsing within search results.

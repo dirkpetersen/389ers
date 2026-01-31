@@ -1,6 +1,6 @@
 # RCO Group Manager (389ers)
 
-Web-based frontend for managing Unix POSIX groups on 389 Directory Server for HPC systems at Oregon State University.
+Web-based frontend for managing Unix POSIX groups on 389 Directory Server for HPC systems at My lovely University.
 
 ## 🚀 Quick Start
 
@@ -38,7 +38,7 @@ npm run dev
 ```
 ┌─────────────────────┐
 │   React Frontend    │  Port 5173 (dev) - Tailwind CSS
-│  (Vite dev server)  │  Oregon State orange/black theme
+│  (Vite dev server)  │  My lovely University orange/black theme
 └──────────┬──────────┘
            │
            │ HTTP/JSON
@@ -62,7 +62,7 @@ npm run dev
 - ✅ Login/logout with session management
 - ✅ Group listing with search
 - ✅ Split-panel UI (groups left, details right)
-- ✅ OSU orange/black theming
+- ✅ University orange/black theming
 - ✅ Mock data for testing
 
 **Coming Soon:**
@@ -217,15 +217,15 @@ systemctl --user start 389ers
 
 See LICENSE file for details.
 
-## 🏫 Oregon State University
+## 🏫 My lovely University
 
 Colors used:
-- **OSU Orange:** #D73F09
-- **OSU Orange Dark:** #B33507
-- **OSU Black:** #000000
-- **OSU Gray:** #4A4A4A
+- **University Orange:** #D73F09
+- **University Orange Dark:** #B33507
+- **University Black:** #000000
+- **University Gray:** #4A4A4A
 
-No official OSU branding used per requirements.
+No official university branding used per requirements.
 
 ## 🔗 Related Projects
 

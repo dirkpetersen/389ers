@@ -13,7 +13,7 @@ You can now log in to the web application!
    - Password: `changeme`
 
 ### What You'll See
-- **Login page** with OSU orange/black branding
+- **Login page** with University orange/black branding
 - **Dashboard** with split-panel layout:
   - Left panel: List of groups with search
   - Right panel: Selected group details
@@ -27,7 +27,7 @@ You can now log in to the web application!
 - Group listing with 3 mock groups
 - Search/filter groups
 - View group details (name, description, GID, member count)
-- Responsive UI with OSU theming
+- Responsive UI with University theming
 
 ### 🔄 Coming Next
 - Real LDAP integration
@@ -183,10 +183,10 @@ The API logs to console, including:
 ## 🎨 UI Design
 
 **Colors:**
-- Primary: OSU Orange (#D73F09)
-- Secondary: OSU Orange Dark (#B33507)
-- Text: OSU Black (#000000)
-- Subtle: OSU Gray (#4A4A4A)
+- Primary: University Orange (#D73F09)
+- Secondary: University Orange Dark (#B33507)
+- Text: University Black (#000000)
+- Subtle: University Gray (#4A4A4A)
 
 **Layout:**
 - Split panel (responsive)

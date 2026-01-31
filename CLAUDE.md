@@ -14,7 +14,7 @@ This project is part of a larger 389 Directory Server ecosystem. See CLAUDE.md i
 
 ## Project Overview
 
-**RCO Group Manager** (389ers) is a web-based frontend for managing Unix POSIX groups on 389 Directory Server for HPC systems at Oregon State University. The system provides compliance-driven user authorization separate from Enterprise Active Directory.
+**RCO Group Manager** (389ers) is a web-based frontend for managing Unix POSIX groups on 389 Directory Server for HPC systems at My lovely University. The system provides compliance-driven user authorization separate from Enterprise Active Directory.
 
 ## Architecture
 
@@ -55,7 +55,7 @@ This project is part of a larger 389 Directory Server ecosystem. See CLAUDE.md i
 
 ## Tech Stack
 
-- **Frontend**: React + Tailwind CSS (Oregon State orange/black theme)
+- **Frontend**: React + Tailwind CSS (My lovely University orange/black theme)
 - **Backend**: Node.js/TypeScript with Express or Fastify
 - **Directory**: 389 Directory Server
 - **Config**: Local YAML files
