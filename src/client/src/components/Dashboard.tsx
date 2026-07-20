@@ -1,15 +1,37 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect } from 'react';
+import MemberList from './MemberList';
+import UserSearch from './UserSearch';
+import BulkAddModal from './BulkAddModal';
+import GroupForm from './GroupForm';
 
 interface User {
   username: string;
   isAdmin: boolean;
 }
 
-interface Group {
+interface GroupSummary {
   cn: string;
   description: string;
   gidNumber: number;
   memberCount: number;
+  canManage: boolean;
+}
+
+interface GroupDetail {
+  dn: string;
+  cn: string;
+  gidNumber: number;
+  description: string;
+  memberCount: number;
+  members: Member[];
+  managedBy: string[];
+  canManage: boolean;
+}
+
+interface Member {
+  uid: string;
+  cn: string;
+  mail?: string;
 }
 
 interface DashboardProps {
@@ -18,14 +40,33 @@ interface DashboardProps {
 }
 
 export default function Dashboard({ user, onLogout }: DashboardProps) {
-  const [groups, setGroups] = useState<Group[]>([]);
-  const [selectedGroup, setSelectedGroup] = useState<Group | null>(null);
+  const [groups, setGroups] = useState<GroupSummary[]>([]);
+  const [selectedGroupCn, setSelectedGroupCn] = useState<string | null>(null);
+  const [groupDetail, setGroupDetail] = useState<GroupDetail | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [loading, setLoading] = useState(true);
+  const [detailLoading, setDetailLoading] = useState(false);
+
+  // Modal states
+  const [showAddMembers, setShowAddMembers] = useState(false);
+  const [showBulkAdd, setShowBulkAdd] = useState(false);
+  const [showCreateGroup, setShowCreateGroup] = useState(false);
+  const [showEditGroup, setShowEditGroup] = useState(false);
+
+  // Selected users for add members modal
+  const [selectedUsers, setSelectedUsers] = useState<Member[]>([]);
 
   useEffect(() => {
     loadGroups();
   }, []);
+
+  useEffect(() => {
+    if (selectedGroupCn) {
+      loadGroupDetail(selectedGroupCn);
+    } else {
+      setGroupDetail(null);
+    }
+  }, [selectedGroupCn]);
 
   const loadGroups = async () => {
     try {
@@ -36,6 +77,154 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
       console.error('Failed to load groups:', err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadGroupDetail = async (cn: string) => {
+    setDetailLoading(true);
+    try {
+      const res = await fetch(`/api/groups/${encodeURIComponent(cn)}`, { credentials: 'include' });
+      if (res.ok) {
+        const data = await res.json();
+        setGroupDetail(data);
+      }
+    } catch (err) {
+      console.error('Failed to load group detail:', err);
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  const handleRemoveMember = async (uid: string) => {
+    if (!groupDetail || !confirm(`Remove ${uid} from ${groupDetail.cn}?`)) return;
+
+    try {
+      const res = await fetch(`/api/groups/${encodeURIComponent(groupDetail.cn)}/members`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ members: [uid] }),
+        credentials: 'include',
+      });
+
+      if (res.ok) {
+        await loadGroupDetail(groupDetail.cn);
+        await loadGroups();
+      } else {
+        const data = await res.json();
+        alert(data.error || 'Failed to remove member');
+      }
+    } catch (err) {
+      console.error('Remove member error:', err);
+      alert('Failed to remove member');
+    }
+  };
+
+  const handleAddMembers = async () => {
+    if (!groupDetail || selectedUsers.length === 0) return;
+
+    try {
+      const res = await fetch(`/api/groups/${encodeURIComponent(groupDetail.cn)}/members`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ members: selectedUsers.map(u => u.uid) }),
+        credentials: 'include',
+      });
+
+      if (res.ok) {
+        setSelectedUsers([]);
+        setShowAddMembers(false);
+        await loadGroupDetail(groupDetail.cn);
+        await loadGroups();
+      } else {
+        const data = await res.json();
+        alert(data.error || 'Failed to add members');
+      }
+    } catch (err) {
+      console.error('Add members error:', err);
+      alert('Failed to add members');
+    }
+  };
+
+  const handleBulkAdd = async (uids: string[]) => {
+    if (!groupDetail) return;
+
+    const res = await fetch(`/api/groups/${encodeURIComponent(groupDetail.cn)}/members`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ members: uids }),
+      credentials: 'include',
+    });
+
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.error || 'Failed to add members');
+    }
+
+    const result = await res.json();
+    await loadGroupDetail(groupDetail.cn);
+    await loadGroups();
+
+    if (result.notFound?.length > 0) {
+      alert(`Added ${result.added.length} members. ${result.notFound.length} users not found: ${result.notFound.join(', ')}`);
+    }
+  };
+
+  const handleCreateGroup = async (data: { cn: string; description: string; members: string[] }) => {
+    const res = await fetch('/api/groups', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+      credentials: 'include',
+    });
+
+    if (!res.ok) {
+      const result = await res.json();
+      throw new Error(result.error || 'Failed to create group');
+    }
+
+    await loadGroups();
+    const result = await res.json();
+    setSelectedGroupCn(result.cn);
+  };
+
+  const handleEditGroup = async (data: { cn: string; description: string }) => {
+    if (!groupDetail) return;
+
+    const res = await fetch(`/api/groups/${encodeURIComponent(groupDetail.cn)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ description: data.description }),
+      credentials: 'include',
+    });
+
+    if (!res.ok) {
+      const result = await res.json();
+      throw new Error(result.error || 'Failed to update group');
+    }
+
+    await loadGroupDetail(groupDetail.cn);
+    await loadGroups();
+  };
+
+  const handleDeleteGroup = async () => {
+    if (!groupDetail || !confirm(`Delete group "${groupDetail.cn}"? This cannot be undone.`)) return;
+
+    try {
+      const res = await fetch(`/api/groups/${encodeURIComponent(groupDetail.cn)}`, {
+        method: 'DELETE',
+        credentials: 'include',
+      });
+
+      if (res.ok) {
+        setSelectedGroupCn(null);
+        await loadGroups();
+      } else {
+        const data = await res.json();
+        alert(data.error || 'Failed to delete group');
+      }
+    } catch (err) {
+      console.error('Delete group error:', err);
+      alert('Failed to delete group');
     }
   };
 
@@ -55,6 +244,14 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
               <p className="text-xs text-gray-300">My lovely University</p>
             </div>
             <div className="flex items-center space-x-4">
+              {user.isAdmin && (
+                <button
+                  onClick={() => setShowCreateGroup(true)}
+                  className="px-4 py-2 text-sm bg-green-600 hover:bg-green-700 rounded transition-colors"
+                >
+                  + New Group
+                </button>
+              )}
               <div className="text-right">
                 <div className="text-sm font-medium">{user.username}</div>
                 {user.isAdmin && (
@@ -101,15 +298,22 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
                 filteredGroups.map((group) => (
                   <div
                     key={group.cn}
-                    onClick={() => setSelectedGroup(group)}
+                    onClick={() => setSelectedGroupCn(group.cn)}
                     className={`p-4 cursor-pointer hover:bg-gray-50 transition-colors ${
-                      selectedGroup?.cn === group.cn ? 'bg-osu-orange bg-opacity-10 border-l-4 border-osu-orange' : ''
+                      selectedGroupCn === group.cn ? 'bg-osu-orange bg-opacity-10 border-l-4 border-osu-orange' : ''
                     }`}
                   >
-                    <div className="font-medium text-gray-900">{group.cn}</div>
+                    <div className="flex justify-between items-start">
+                      <div className="font-medium text-gray-900">{group.cn}</div>
+                      {group.canManage && (
+                        <span className="text-xs bg-green-100 text-green-800 px-2 py-0.5 rounded">
+                          Can Manage
+                        </span>
+                      )}
+                    </div>
                     <div className="text-sm text-gray-600 truncate">{group.description}</div>
                     <div className="text-xs text-gray-500 mt-1">
-                      GID: {group.gidNumber} • {group.memberCount} members
+                      GID: {group.gidNumber} | {group.memberCount} members
                     </div>
                   </div>
                 ))
@@ -123,42 +327,79 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
               <h3 className="text-lg font-semibold text-gray-900">Group Details</h3>
             </div>
             <div className="p-6">
-              {selectedGroup ? (
+              {detailLoading ? (
+                <div className="text-center text-gray-500 py-12">Loading group details...</div>
+              ) : groupDetail ? (
                 <div className="space-y-6">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Group Name
-                    </label>
-                    <div className="text-lg font-semibold text-gray-900">{selectedGroup.cn}</div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Group Name
+                      </label>
+                      <div className="text-lg font-semibold text-gray-900">{groupDetail.cn}</div>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        GID Number
+                      </label>
+                      <div className="text-gray-900 font-mono">{groupDetail.gidNumber}</div>
+                    </div>
                   </div>
+
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">
                       Description
                     </label>
-                    <div className="text-gray-900">{selectedGroup.description}</div>
+                    <div className="text-gray-900">{groupDetail.description}</div>
                   </div>
+
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      GID Number
-                    </label>
-                    <div className="text-gray-900 font-mono">{selectedGroup.gidNumber}</div>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Members ({selectedGroup.memberCount})
-                    </label>
-                    <div className="bg-gray-50 rounded p-4 text-gray-600 text-sm">
-                      Member management coming soon...
+                    <div className="flex justify-between items-center mb-2">
+                      <label className="block text-sm font-medium text-gray-700">
+                        Members ({groupDetail.members.length})
+                      </label>
+                      {groupDetail.canManage && (
+                        <div className="space-x-2">
+                          <button
+                            onClick={() => setShowAddMembers(true)}
+                            className="px-3 py-1 text-sm bg-osu-orange text-white rounded hover:bg-osu-orange-dark transition-colors"
+                          >
+                            + Add
+                          </button>
+                          <button
+                            onClick={() => setShowBulkAdd(true)}
+                            className="px-3 py-1 text-sm bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition-colors"
+                          >
+                            Bulk Add
+                          </button>
+                        </div>
+                      )}
                     </div>
+                    <MemberList
+                      members={groupDetail.members}
+                      canManage={groupDetail.canManage}
+                      onRemove={handleRemoveMember}
+                    />
                   </div>
-                  <div className="pt-4 border-t border-gray-200">
-                    <button className="px-4 py-2 bg-osu-orange text-white rounded hover:bg-osu-orange-dark transition-colors mr-2">
-                      Add Members
-                    </button>
-                    <button className="px-4 py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition-colors">
-                      Edit Group
-                    </button>
-                  </div>
+
+                  {groupDetail.canManage && (
+                    <div className="pt-4 border-t border-gray-200 flex justify-between">
+                      <button
+                        onClick={() => setShowEditGroup(true)}
+                        className="px-4 py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition-colors"
+                      >
+                        Edit Group
+                      </button>
+                      {user.isAdmin && (
+                        <button
+                          onClick={handleDeleteGroup}
+                          className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 transition-colors"
+                        >
+                          Delete Group
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div className="text-center text-gray-500 py-12">
@@ -169,6 +410,71 @@ export default function Dashboard({ user, onLogout }: DashboardProps) {
           </div>
         </div>
       </div>
+
+      {/* Add Members Modal */}
+      {showAddMembers && groupDetail && (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+          <div className="fixed inset-0 bg-black bg-opacity-50" onClick={() => {
+            setShowAddMembers(false);
+            setSelectedUsers([]);
+          }} />
+          <div className="flex min-h-full items-center justify-center p-4">
+            <div className="relative bg-white rounded-lg shadow-xl max-w-lg w-full p-6">
+              <h3 className="text-lg font-semibold text-gray-900 mb-4">
+                Add Members to {groupDetail.cn}
+              </h3>
+              <UserSearch
+                selectedUsers={selectedUsers}
+                onSelect={setSelectedUsers}
+                placeholder="Search users to add..."
+              />
+              <div className="mt-6 flex justify-end space-x-3">
+                <button
+                  onClick={() => {
+                    setShowAddMembers(false);
+                    setSelectedUsers([]);
+                  }}
+                  className="px-4 py-2 text-gray-700 bg-gray-200 rounded hover:bg-gray-300 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleAddMembers}
+                  disabled={selectedUsers.length === 0}
+                  className="px-4 py-2 text-white bg-osu-orange rounded hover:bg-osu-orange-dark transition-colors disabled:opacity-50"
+                >
+                  Add {selectedUsers.length} Member{selectedUsers.length !== 1 ? 's' : ''}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk Add Modal */}
+      <BulkAddModal
+        isOpen={showBulkAdd}
+        onClose={() => setShowBulkAdd(false)}
+        onSubmit={handleBulkAdd}
+        groupName={groupDetail?.cn || ''}
+      />
+
+      {/* Create Group Modal */}
+      <GroupForm
+        isOpen={showCreateGroup}
+        onClose={() => setShowCreateGroup(false)}
+        onSubmit={handleCreateGroup}
+        mode="create"
+      />
+
+      {/* Edit Group Modal */}
+      <GroupForm
+        isOpen={showEditGroup}
+        onClose={() => setShowEditGroup(false)}
+        onSubmit={handleEditGroup}
+        mode="edit"
+        initialData={groupDetail ? { cn: groupDetail.cn, description: groupDetail.description } : undefined}
+      />
     </div>
   );
 }

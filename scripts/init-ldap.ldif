@@ -1,0 +1,83 @@
+# Initialize LDAP directory structure for 389ers
+# Import with: ldapadd -x -D "cn=admin,dc=rco,dc=university,dc=edu" -w password -f init-ldap.ldif
+
+# Create People OU
+dn: ou=People,dc=rco,dc=university,dc=edu
+objectClass: organizationalUnit
+objectClass: top
+ou: People
+description: Container for user accounts
+
+# Create Groups OU
+dn: ou=Groups,dc=rco,dc=university,dc=edu
+objectClass: organizationalUnit
+objectClass: top
+ou: Groups
+description: Container for POSIX groups
+
+# Create admin group
+dn: cn=389ers-admins,ou=Groups,dc=rco,dc=university,dc=edu
+objectClass: top
+objectClass: posixGroup
+cn: 389ers-admins
+gidNumber: 300000
+description: Administrators for 389ers Group Manager
+
+# Sample test users
+dn: uid=testuser1,ou=People,dc=rco,dc=university,dc=edu
+objectClass: top
+objectClass: person
+objectClass: organizationalPerson
+objectClass: inetOrgPerson
+objectClass: posixAccount
+uid: testuser1
+cn: Test User One
+sn: One
+givenName: Test
+mail: testuser1@university.edu
+uidNumber: 10100
+gidNumber: 10100
+homeDirectory: /home/testuser1
+loginShell: /bin/bash
+
+dn: uid=testuser2,ou=People,dc=rco,dc=university,dc=edu
+objectClass: top
+objectClass: person
+objectClass: organizationalPerson
+objectClass: inetOrgPerson
+objectClass: posixAccount
+uid: testuser2
+cn: Test User Two
+sn: Two
+givenName: Test
+mail: testuser2@university.edu
+uidNumber: 10101
+gidNumber: 10101
+homeDirectory: /home/testuser2
+loginShell: /bin/bash
+
+dn: uid=testuser3,ou=People,dc=rco,dc=university,dc=edu
+objectClass: top
+objectClass: person
+objectClass: organizationalPerson
+objectClass: inetOrgPerson
+objectClass: posixAccount
+uid: testuser3
+cn: Test User Three
+sn: Three
+givenName: Test
+mail: testuser3@university.edu
+uidNumber: 10102
+gidNumber: 10102
+homeDirectory: /home/testuser3
+loginShell: /bin/bash
+
+# Sample test group
+dn: cn=test-group,ou=Groups,dc=rco,dc=university,dc=edu
+objectClass: top
+objectClass: posixGroup
+cn: test-group
+gidNumber: 300001
+description: A test group for development
+memberUid: testuser1
+memberUid: testuser2

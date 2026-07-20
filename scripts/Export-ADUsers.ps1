@@ -30,7 +30,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$false)]
-    [string]$OutputPath = ".\ad-users-export.ldif",
+    [string]$OutputPath,
 
     [Parameter(Mandatory=$false)]
     [string]$BaseDN = "dc=rco,dc=university,dc=edu",
@@ -42,10 +42,16 @@ param(
     [int]$StartingUidNumber = 10000
 )
 
+# Set default OutputPath to script directory
+if (-not $OutputPath) {
+    $scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Definition }
+    $OutputPath = Join-Path $scriptDir "ad-users-export.ldif"
+}
+
 # Import Active Directory module
 try {
     Import-Module ActiveDirectory -ErrorAction Stop
-    Write-Host "✓ Active Directory module loaded" -ForegroundColor Green
+    Write-Host "Active Directory module loaded" -ForegroundColor Green
 }
 catch {
     Write-Error "Failed to load Active Directory module. Ensure RSAT tools are installed."
@@ -57,7 +63,7 @@ try {
     $domain = Get-ADDomain
     $domainDN = $domain.DistinguishedName
     $domainName = $domain.DNSRoot
-    Write-Host "✓ Connected to domain: $domainName" -ForegroundColor Green
+    Write-Host " Connected to domain: $domainName" -ForegroundColor Green
     Write-Host "  Domain DN: $domainDN" -ForegroundColor Cyan
 }
 catch {
@@ -85,7 +91,7 @@ $users = Get-ADUser -Filter 'Enabled -eq $true' -Properties `
     HomeDrive
 
 $userCount = $users.Count
-Write-Host "✓ Retrieved $userCount users" -ForegroundColor Green
+Write-Host " Retrieved $userCount users" -ForegroundColor Green
 
 # Initialize LDIF content
 $ldifContent = @"
@@ -180,78 +186,51 @@ foreach ($user in $users) {
     $gidNumber = $uidNumber  # Use same as uidNumber for primary group
     $uidNumber++
 
-    # Build LDIF entry
-    $ldifContent += @"
-# User: $cn ($username)
-dn: $userDN
-objectClass: top
-objectClass: person
-objectClass: organizationalPerson
-objectClass: inetOrgPerson
-objectClass: posixAccount
-objectClass: shadowAccount
-uid: $username
-cn: $cn
-sn: $sn
-"@
+    # Build LDIF entry - each entry MUST be separated by a blank line
+    # Using StringBuilder-style approach with explicit newlines
+    $entry = @()
+    $entry += "# User: $cn ($username)"
+    $entry += "dn: $userDN"
+    $entry += "objectClass: top"
+    $entry += "objectClass: person"
+    $entry += "objectClass: organizationalPerson"
+    $entry += "objectClass: inetOrgPerson"
+    $entry += "objectClass: posixAccount"
+    $entry += "uid: $username"
+    $entry += "cn: $cn"
+    $entry += "sn: $sn"
 
     if ($givenName) {
-        $ldifContent += "givenName: $givenName`n"
+        $entry += "givenName: $givenName"
     }
 
     if ($mail) {
-        $ldifContent += "mail: $mail`n"
+        $entry += "mail: $mail"
     }
 
-    $ldifContent += @"
-uidNumber: $currentUidNumber
-gidNumber: $gidNumber
-homeDirectory: $homeDirectory
-loginShell: /bin/bash
-"@
-
-    if ($userPrincipalName) {
-        $ldifContent += "userPrincipalName: $userPrincipalName`n"
-    }
+    $entry += "uidNumber: $currentUidNumber"
+    $entry += "gidNumber: $gidNumber"
+    $entry += "homeDirectory: $homeDirectory"
+    $entry += "loginShell: /bin/bash"
 
     if ($description) {
         # Escape special characters in LDIF
         $escapedDescription = $description -replace '[\r\n]+', ' '
-        $ldifContent += "description: $escapedDescription`n"
+        $entry += "description: $escapedDescription"
     }
 
-    if ($title) {
-        $ldifContent += "title: $title`n"
-    }
-
-    if ($departmentNumber) {
-        $ldifContent += "departmentNumber: $departmentNumber`n"
-    }
-
-    if ($telephoneNumber) {
-        $ldifContent += "telephoneNumber: $telephoneNumber`n"
-    }
-
-    if ($employeeNumber) {
-        $ldifContent += "employeeNumber: $employeeNumber`n"
-    }
-
-    # Add shadow account attributes (password aging)
-    $ldifContent += @"
-shadowLastChange: 0
-shadowMin: 0
-shadowMax: 99999
-shadowWarning: 7
-
-"@
+    # Add entry with blank line separator (LDIF requires blank line between entries)
+    $ldifContent += "`n" + ($entry -join "`n") + "`n"
 }
 
-Write-Host "✓ Processed all $userCount users" -ForegroundColor Green
+Write-Host " Processed all $userCount users" -ForegroundColor Green
 
-# Write LDIF to file
+# Write LDIF to file (UTF-8 without BOM for LDAP compatibility)
 try {
-    $ldifContent | Out-File -FilePath $OutputPath -Encoding UTF8 -Force
-    Write-Host "`n✓ LDIF file created successfully" -ForegroundColor Green
+    # Use .NET to write UTF-8 without BOM
+    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+    [System.IO.File]::WriteAllText($OutputPath, $ldifContent, $utf8NoBom)
+    Write-Host " LDIF file created successfully" -ForegroundColor Green
     Write-Host "  Output file: $OutputPath" -ForegroundColor Cyan
     Write-Host "  File size: $([math]::Round((Get-Item $OutputPath).Length / 1KB, 2)) KB" -ForegroundColor Cyan
 }
@@ -289,4 +268,4 @@ Write-Host "  Starting uidNumber: $StartingUidNumber" -ForegroundColor White
 Write-Host "  Ending uidNumber: $($uidNumber - 1)" -ForegroundColor White
 Write-Host "  Target Base DN: $BaseDN" -ForegroundColor White
 Write-Host "  User Container: $UserOU,$BaseDN" -ForegroundColor White
-Write-Host "`n✓ Export complete!" -ForegroundColor Green
+Write-Host " Export complete!" -ForegroundColor Green

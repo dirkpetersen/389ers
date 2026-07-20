@@ -1,0 +1,53 @@
+services:
+  389-ds:
+    image: osixia/openldap:1.5.0
+    container_name: 389-ds-localhost
+    hostname: localhost
+    environment:
+      - LDAP_ORGANISATION=RCO University
+      - LDAP_DOMAIN=rco.university.edu
+      - LDAP_ADMIN_PASSWORD=password
+    ports:
+      - "10389:389"
+      - "10636:636"
+    volumes:
+      - ldap_data:/var/lib/ldap
+      - ldap_config:/etc/ldap/slapd.d
+    healthcheck:
+      test: ["CMD", "ldapsearch", "-x", "-H", "ldap://localhost:389", "-b", "", "-s", "base"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - 389ers-net
+
+  web-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: 389ers-web
+    hostname: web
+    ports:
+      - "8088:8088"
+    depends_on:
+      389-ds:
+        condition: service_healthy
+    environment:
+      - LDAP_URL=ldap://389-ds:389
+      - LDAP_BIND_DN=cn=admin,dc=rco,dc=university,dc=edu
+      - LDAP_BIND_PASSWORD=password
+      - LDAP_BASE_DN=dc=rco,dc=university,dc=edu
+      - NODE_ENV=production
+    networks:
+      - 389ers-net
+
+networks:
+  389ers-net:
+    driver: bridge
+
+volumes:
+  ldap_data:
+    driver: local
+  ldap_config:
+    driver: local

@@ -2,102 +2,180 @@
 
 Web-based frontend for managing Unix POSIX groups on 389 Directory Server for HPC systems at My lovely University.
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
-- Node.js 18+ and npm
-- 389 Directory Server (see BUILD.md)
-- Ports 8088 (API) and 5173 (frontend) available
 
-### Installation
+- Docker and docker-compose
+- Node.js 18+ (for development mode only)
+
+### Option 1: Docker (Recommended for Production)
 
 ```bash
-# Install dependencies
-npm install
+docker-compose up -d
+```
 
-# Start development servers
+Open http://localhost:8088 and login with `admin` / `changeme`
+
+### Option 2: Development Mode (Hot Reload)
+
+```bash
+# Start LDAP in Docker
+docker-compose up -d 389-ds
+
+# Wait for healthy status
+docker-compose ps
+
+# Install deps and start dev server
+npm install
 npm run dev
 ```
 
-### Access the Application
+Open http://localhost:5173 and login with `admin` / `changeme`
 
-1. Open browser to http://localhost:5173
-2. Login with default credentials:
-   - **Username:** `admin`
-   - **Password:** `changeme`
+### First Time Setup: Import Users
 
-## 📚 Documentation
+On first run, import the AD users into LDAP:
 
-- **[BUILD.md](./BUILD.md)** - Building 389 Directory Server from source
-- **[QA.md](./QA.md)** - Complete requirements and Q&A
-- **[CLAUDE.md](./CLAUDE.md)** - Project architecture and guidance
-- **[PYTHON_ISSUES.md](./PYTHON_ISSUES.md)** - Python build issues and solutions
-
-## 🏗️ Architecture
-
-```
-┌─────────────────────┐
-│   React Frontend    │  Port 5173 (dev) - Tailwind CSS
-│  (Vite dev server)  │  My lovely University orange/black theme
-└──────────┬──────────┘
-           │
-           │ HTTP/JSON
-           ▼
-┌─────────────────────┐
-│  Express API Server │  Port 8088
-│  (Node.js/TypeScript)│  Session-based auth
-└──────────┬──────────┘
-           │
-           │ LDAP
-           ▼
-┌─────────────────────┐
-│ 389 Directory Server│  Port 10389
-│  dc=rco,dc=university│  LMDB backend
-└─────────────────────┘
+```bash
+# Copy LDIF into container and import
+docker cp scripts/ad-users-export.ldif 389-ds-localhost:/tmp/
+docker exec 389-ds-localhost ldapadd -x -H ldap://localhost:389 \
+  -D "cn=admin,dc=rco,dc=university,dc=edu" -w password \
+  -f /tmp/ad-users-export.ldif -c
 ```
 
-## 🎨 Features
+Data persists in Docker volumes across restarts.
 
-**Current (Demo Mode):**
-- ✅ Login/logout with session management
-- ✅ Group listing with search
-- ✅ Split-panel UI (groups left, details right)
-- ✅ University orange/black theming
-- ✅ Mock data for testing
+### Troubleshooting
 
-**Coming Soon:**
-- [ ] Real LDAP integration
-- [ ] User search and bulk operations
-- [ ] Group creation and editing
-- [ ] Nested group resolution
-- [ ] Member management
-- [ ] Audit logging
-- [ ] SAML authentication
-
-## 🛠️ Development
-
-### Project Structure
-
-```
-389ers/
-├── src/
-│   ├── server/           # Express API (TypeScript)
-│   │   └── index.ts
-│   └── client/           # React frontend
-│       ├── src/
-│       │   ├── App.tsx
-│       │   ├── components/
-│       │   │   ├── Login.tsx
-│       │   │   └── Dashboard.tsx
-│       │   └── main.tsx
-│       └── index.html
-├── config/
-│   └── config.yaml      # LDAP connection settings
-├── install/             # 389 DS binaries (gitignored)
-└── package.json
+**Port 8088 in use:** Kill existing process or use dev mode (port 5173)
+```bash
+lsof -i :8088
+kill <PID>
 ```
 
-### Available Scripts
+**LDAP connection errors:** Restart the containers
+```bash
+docker-compose restart
+```
+
+**Reset everything (loses data):**
+```bash
+docker-compose down -v
+docker-compose up -d
+```
+
+## Architecture
+
+```
+React Frontend (Vite, port 5173 dev / 8088 prod)
+        |
+        | /api proxy
+        v
+Express API (port 8088)
+        |
+        +-- DIRECTORY_BACKEND=ldap --> 389 DS / OpenLDAP (port 10389)   [read-write]
+        |
+        +-- DIRECTORY_BACKEND=nss  --> getent(1) -> nsswitch.conf        [read-only]
+                                          |
+                                          +-- local files
+                                          +-- SSSD --> Active Directory
+```
+
+## Directory Backends
+
+The API resolves users and groups through a pluggable backend, selected with the
+`DIRECTORY_BACKEND` environment variable.
+
+### `ldap` (default) — 389 DS / OpenLDAP
+
+Binds with a service account from `config/config.yaml`. Full read-write: create,
+rename, and delete groups, and add or remove members.
+
+### `nss` — Active Directory via SSSD
+
+Resolves through `getent(1)`, so it follows whatever the host's `nsswitch.conf`
+is configured for. On an AD-joined Linux host running SSSD, that means the app
+reads Active Directory **using the machine's existing authentication** — no bind
+DN, no service-account password, no LDAP configuration in this app at all.
+
+```bash
+npm run build
+NODE_ENV=production \
+DIRECTORY_BACKEND=nss \
+AUTH_MODE=local \
+NSS_GROUP_PREFIX=grp- \
+  npm start
+```
+
+Then open http://127.0.0.1:8088 — `AUTH_MODE=local` signs you in as the OS user
+running the process, so there is no login prompt.
+
+The same command works on a machine that is *not* AD-joined; `getent` simply
+resolves against local `/etc/passwd` and `/etc/group` instead, which is handy for
+development.
+
+> **This backend is read-only.** `getent` cannot write to the directory, so
+> creating or deleting groups and adding or removing members all return HTTP 501.
+> Use `DIRECTORY_BACKEND=ldap` to manage groups.
+
+Verify which backend is live at any time:
+
+```bash
+curl -s http://127.0.0.1:8088/api/health
+```
+
+#### Things to know about the NSS backend
+
+- **Unix groups do not nest**, so resolved membership is always flat.
+- **There is no `managedBy` attribute.** Delegation is expressed by naming
+  convention: members of `<group>-adm` may manage `<group>`. Being a member of a
+  group grants no management rights on its own.
+- **Search depends on directory enumeration.** SSSD ships with
+  `enumerate = false` for AD providers, because enumerating a large domain is
+  expensive, so substring search will return little or nothing there. The backend
+  always also tries an exact-name lookup, so searching for a full account name
+  keeps working. Set `enumerate = true` in `sssd.conf` to restore substring
+  search, at a real performance cost on large domains.
+
+#### NSS environment variables
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `NSS_ADMIN_SUFFIX` | `-adm` | Suffix identifying a group's manager group |
+| `NSS_GROUP_PREFIX` | *(empty)* | Only show groups with this prefix, hiding per-user private groups |
+| `NSS_MIN_UID` / `NSS_MIN_GID` | `1000` | Hide system accounts |
+| `NSS_MAX_ID` | `65000` | Hide the `nobody` / `nogroup` sentinels at 65534 |
+
+### Authentication modes
+
+| `AUTH_MODE` | Behaviour |
+|-------------|-----------|
+| `password` (default) | Local `admin` account from `config.yaml`. LDAP bind-as-user is not yet implemented. |
+| `local` | Trusts the OS identity of the process owner; no login prompt. Binds to `127.0.0.1` only. |
+
+`AUTH_MODE=local` grants the running user's identity to anyone who can reach the
+port, so it binds to loopback by default. Override with `BIND_HOST` only if you
+have put real authentication in front of it.
+
+## Configuration
+
+| Setting | Value |
+|---------|-------|
+| Base DN | `dc=rco,dc=university,dc=edu` |
+| LDAP Port | 10389 |
+| Web App Port | 8088 (prod) / 5173 (dev) |
+| GID Range | 300000-400000 |
+
+### Default Credentials
+
+| Service | Username | Password |
+|---------|----------|----------|
+| Web App | `admin` | `changeme` |
+| LDAP Admin | `cn=admin,dc=rco,dc=university,dc=edu` | `password` |
+
+## Available Scripts
 
 ```bash
 npm run dev          # Start dev servers (frontend + backend)
@@ -108,131 +186,65 @@ npm start            # Run production build
 npm run lint         # Lint TypeScript code
 ```
 
-### Configuration
+## Project Structure
 
-Edit `config/config.yaml`:
-
-```yaml
-server:
-  port: 8088
-  sessionSecret: "change-me-in-production"
-  sessionTimeout: 3600000  # 1 hour
-
-ldap:
-  url: "ldap://localhost:10389"
-  baseDN: "dc=rco,dc=university,dc=edu"
-  bindDN: "cn=Directory Manager"
-  bindPassword: "password"
+```
+389ers/
+├── src/
+│   ├── server/           # Express API (TypeScript)
+│   │   ├── index.ts      # Entry point
+│   │   ├── ldap/         # LDAP client
+│   │   ├── routes/       # API routes
+│   │   ├── auth/         # Authorization
+│   │   ├── audit/        # Audit logging
+│   │   └── middleware/   # Auth middleware
+│   └── client/           # React frontend
+│       └── src/
+│           ├── App.tsx
+│           └── components/
+├── config/
+│   └── config.yaml       # LDAP connection settings
+├── docker-compose.yml    # Docker services
+├── Dockerfile            # Web app container
+└── package.json
 ```
 
-## 🔐 Security
+## Documentation
 
-**Current (Development):**
+- **[docs/BUILD.md](./docs/BUILD.md)** - Building 389 DS from source
+- **[docs/QA.md](./docs/QA.md)** - Complete requirements
+- **[docs/GETTING_STARTED.md](./docs/GETTING_STARTED.md)** - Quick start guide
+- **[CLAUDE.md](./CLAUDE.md)** - Project architecture
+
+## Features
+
+- Login/logout with session management
+- Group listing with search
+- Create/edit/delete groups
+- Member management
+- User search with debounce
+- Bulk member operations
+- Audit logging
+- University orange/black theming
+
+## Security
+
+**Development:**
 - Simple password-based authentication
 - Session cookies (HTTP only)
-- CORS enabled for localhost
 
 **Production TODO:**
 - SAML/SSO integration
 - HTTPS required
-- Secure session secrets
 - Rate limiting
-- Audit logging to file
 
-## 🧪 Testing
+## University Colors
 
-```bash
-# Currently using mock data
-# Real LDAP integration coming next
-```
-
-## 📦 Deployment
-
-### systemd User Service
-
-```ini
-[Unit]
-Description=RCO Group Manager
-After=network.target
-
-[Service]
-Type=simple
-WorkingDirectory=/home/dp/gh/389/389ers
-ExecStart=/usr/bin/npm start
-Restart=always
-Environment=NODE_ENV=production
-
-[Install]
-WantedBy=default.target
-```
-
-Install:
-```bash
-systemctl --user enable 389ers
-systemctl --user start 389ers
-```
-
-## 🎯 Roadmap
-
-### Phase 1: MVP (Current)
-- [x] Project setup
-- [x] Authentication UI
-- [x] Basic group listing
-- [x] Split-panel layout
-- [ ] Real LDAP integration
-
-### Phase 2: Core Features
-- [ ] Group CRUD operations
-- [ ] User search (virtualized for 100k users)
-- [ ] Member management
-- [ ] Bulk operations
-- [ ] Audit logging
-
-### Phase 3: Advanced
-- [ ] Nested group resolution
-- [ ] managedBy delegation
-- [ ] AD sync monitoring
-- [ ] SAML authentication
-- [ ] Python CLI tools
-
-## 🐛 Known Issues
-
-1. **Python lib389 not installed** - See PYTHON_ISSUES.md for details
-   - CLI tools (dscreate, dsconf) unavailable
-   - Manual LDAP configuration required
-   - Does not affect web app functionality
-
-2. **Mock data only** - Real LDAP integration pending
-
-3. **No instance created** - Need to manually create 389 DS instance
-
-## 🤝 Contributing
-
-1. Follow existing code style (ESLint configured)
-2. Use TypeScript strict mode
-3. Test with both admin and non-admin users
-4. Document new configuration options
-
-## 📄 License
-
-See LICENSE file for details.
-
-## 🏫 My lovely University
-
-Colors used:
-- **University Orange:** #D73F09
-- **University Orange Dark:** #B33507
-- **University Black:** #000000
-- **University Gray:** #4A4A4A
-
-No official university branding used per requirements.
-
-## 🔗 Related Projects
-
-- [389 Directory Server](https://github.com/389ds/389-ds-base)
-- [389 Documentation](https://github.com/389ds/389ds.github.io)
+- **Orange:** #D73F09
+- **Black:** #000000
+- **Gray:** #4A4A4A
 
 ---
 
-**Status:** 🟢 Development - Web app functional with mock data
-**Last Updated:** 2026-01-31
+**Status:** Development
+**Last Updated:** 2026-02-02
