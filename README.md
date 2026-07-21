@@ -33,17 +33,37 @@ npm run dev
 
 Open http://localhost:5173 and login with `admin` / `changeme`
 
-### First Time Setup: Import Users
+### Option 3: Read-only against Active Directory (no LDAP setup)
 
-On first run, import the AD users into LDAP:
+On a Linux host already joined to AD with SSSD, the app can read the directory
+through `getent(1)` using the machine's existing authentication — no LDAP
+server, no bind credentials, no Docker:
 
 ```bash
-# Copy LDIF into container and import
-docker cp scripts/ad-users-export.ldif 389-ds-localhost:/tmp/
+npm install && npm run build
+NODE_ENV=production DIRECTORY_BACKEND=nss AUTH_MODE=local NSS_GROUP_PREFIX=grp- npm start
+```
+
+Open http://127.0.0.1:8088 — you are signed in automatically as the OS user
+running the process. This mode is **read-only**; see
+[Directory Backends](#directory-backends) below.
+
+### First Time Setup: Import Users (LDAP backend only)
+
+On first run, bootstrap the directory structure, admin group, and a few test
+accounts:
+
+```bash
+docker cp scripts/init-ldap.ldif 389-ds-localhost:/tmp/
 docker exec 389-ds-localhost ldapadd -x -H ldap://localhost:389 \
   -D "cn=admin,dc=rco,dc=university,dc=edu" -w password \
-  -f /tmp/ad-users-export.ldif -c
+  -f /tmp/init-ldap.ldif -c
 ```
+
+To load real users instead, generate an LDIF from your own directory with
+[`scripts/Export-ADUsers.ps1`](./scripts/README.md) and import it the same way.
+Generated exports are **not** committed to this repository — they contain real
+names and email addresses, and `.gitignore` deliberately excludes them.
 
 Data persists in Docker volumes across restarts.
 
@@ -183,8 +203,10 @@ npm run dev:server   # Start API server only
 npm run dev:client   # Start frontend only
 npm run build        # Build for production
 npm start            # Run production build
-npm run lint         # Lint TypeScript code
+npm run lint         # Currently broken — no ESLint config file exists in the repo
 ```
+
+There is no test framework configured.
 
 ## Project Structure
 
@@ -192,21 +214,36 @@ npm run lint         # Lint TypeScript code
 389ers/
 ├── src/
 │   ├── server/           # Express API (TypeScript)
-│   │   ├── index.ts      # Entry point
-│   │   ├── ldap/         # LDAP client
-│   │   ├── routes/       # API routes
-│   │   ├── auth/         # Authorization
+│   │   ├── index.ts      # Entry point: config, backend selection, auth routes
+│   │   ├── directory/    # Pluggable backends (LDAP / NSS) — see above
+│   │   ├── ldap/         # LDAP client wrapper
+│   │   ├── routes/       # API routes (users, groups, members, resolved)
+│   │   ├── auth/         # Authorization (canManageGroup, nested membership)
 │   │   ├── audit/        # Audit logging
-│   │   └── middleware/   # Auth middleware
+│   │   ├── middleware/   # Session guards
+│   │   └── types/        # Shared TypeScript interfaces
 │   └── client/           # React frontend
 │       └── src/
 │           ├── App.tsx
-│           └── components/
+│           ├── components/
+│           └── hooks/
 ├── config/
-│   └── config.yaml       # LDAP connection settings
+│   └── config.yaml       # LDAP settings (gitignored — see below)
+├── scripts/              # PowerShell AD→LDIF export, LDAP bootstrap fixture
+├── docs/                 # Requirements, build guide, troubleshooting
 ├── docker-compose.yml    # Docker services
 ├── Dockerfile            # Web app container
 └── package.json
+```
+
+`config/config.yaml` is gitignored because it holds the LDAP bind password, so a
+fresh clone will not have one. The server falls back to the tracked
+`config/config.yaml.example`, which is enough for the NSS backend — it reads only
+the non-LDAP settings (port, session, GID range). The LDAP backend needs real
+credentials and will exit with instructions if only the example is present:
+
+```bash
+cp config/config.yaml.example config/config.yaml   # then fill in your LDAP settings
 ```
 
 ## Documentation
@@ -214,16 +251,22 @@ npm run lint         # Lint TypeScript code
 - **[docs/BUILD.md](./docs/BUILD.md)** - Building 389 DS from source
 - **[docs/QA.md](./docs/QA.md)** - Complete requirements
 - **[docs/GETTING_STARTED.md](./docs/GETTING_STARTED.md)** - Quick start guide
+- **[docs/PYTHON_ISSUES.md](./docs/PYTHON_ISSUES.md)** - Python/build troubleshooting
+- **[scripts/README.md](./scripts/README.md)** - PowerShell AD→LDIF export workflow
 - **[CLAUDE.md](./CLAUDE.md)** - Project architecture
 
 ## Features
 
-- Login/logout with session management
+- Pluggable directory backends: 389 DS / OpenLDAP (read-write) or Active
+  Directory via SSSD (read-only)
+- Login/logout with session management, or passwordless local-OS-identity mode
 - Group listing with search
-- Create/edit/delete groups
-- Member management
+- Create/edit/delete groups *(LDAP backend only)*
+- Member management *(LDAP backend only)*
 - User search with debounce
 - Bulk member operations
+- Nested group resolution with breadcrumb paths
+- Delegated management via `managedBy` (LDAP) or `<group>-adm` convention (NSS)
 - Audit logging
 - University orange/black theming
 
@@ -247,4 +290,4 @@ npm run lint         # Lint TypeScript code
 ---
 
 **Status:** Development
-**Last Updated:** 2026-02-02
+**Last Updated:** 2026-07-20

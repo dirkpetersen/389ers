@@ -1,0 +1,29 @@
+# RCO Group Manager Configuration
+
+server:
+  port: 8088
+  sessionSecret: "change-me-in-production"
+  sessionTimeout: 3600000  # 1 hour in milliseconds
+
+ldap:
+  url: "ldap://localhost:10389"
+  baseDN: "dc=rco,dc=university,dc=edu"
+  bindDN: "cn=admin,dc=rco,dc=university,dc=edu"
+  bindPassword: "changeme"  # Set a real password before using DIRECTORY_BACKEND=ldap
+
+groups:
+  baseDN: "ou=Groups,dc=rco,dc=university,dc=edu"
+  gidMin: 300000
+  gidMax: 400000
+  adminGroup: "cn=389ers-admins,ou=Groups,dc=rco,dc=university,dc=edu"
+
+users:
+  baseDN: "ou=People,dc=rco,dc=university,dc=edu"
+
+audit:
+  logFile: "./permissions-changes.log"
+
+# Initial admin account (for local auth before SAML)
+admin:
+  username: "admin"
+  password: "changeme"  # Must be changed on first login

@@ -39,6 +39,12 @@ Thumbs.db
 *.ldif
 !scripts/init-ldap.ldif
 
+# Named explicitly as well: a real AD export of live accounts. Keep this entry
+# even though *.ldif already covers it, so the exclusion survives any future
+# loosening of the glob above.
+ad-users-export.ldif
+scripts/ad-users-export.ldif
+
 # Rust/Cargo
 target/
 Cargo.lock

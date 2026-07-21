@@ -88,6 +88,10 @@ NODE_ENV=production DIRECTORY_BACKEND=nss AUTH_MODE=local NSS_GROUP_PREFIX=grp- 
 
 `GET /api/health` reports the active backend, whether it is writable, and the auth mode.
 
+### Config loading
+
+`config/config.yaml` is gitignored (it holds the LDAP bind password), so `src/server/index.ts` falls back to the tracked `config/config.yaml.example` when it is absent. That is sufficient for the NSS backend, which uses nothing from the `ldap:` section. The LDAP backend exits with instructions rather than starting on placeholder credentials. If neither file exists the server exits.
+
 ## Key Configuration
 
 | Setting | Value |

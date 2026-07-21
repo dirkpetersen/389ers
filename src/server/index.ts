@@ -22,9 +22,25 @@ import { createResolvedRoutes } from './routes/resolved';
 
 const app = express();
 
-// Load configuration
-const configPath = path.join(__dirname, '../../config/config.yaml');
-const config: AppConfig = yaml.parse(fs.readFileSync(configPath, 'utf8'));
+// Load configuration. config/config.yaml holds the LDAP bind password and is
+// gitignored, so a fresh clone will not have one; fall back to the tracked
+// example so the app still starts. The NSS backend needs nothing from the LDAP
+// section at all, which makes that fallback genuinely useful rather than a
+// broken half-start.
+const configDir = path.join(__dirname, '../../config');
+const configPath = path.join(configDir, 'config.yaml');
+const examplePath = path.join(configDir, 'config.yaml.example');
+
+let configSource = configPath;
+if (!fs.existsSync(configPath)) {
+  if (!fs.existsSync(examplePath)) {
+    console.error(`No configuration found. Expected ${configPath} or ${examplePath}.`);
+    process.exit(1);
+  }
+  configSource = examplePath;
+}
+const config: AppConfig = yaml.parse(fs.readFileSync(configSource, 'utf8'));
+const usingExampleConfig = configSource === examplePath;
 
 // Override with environment variables if set (for Docker)
 if (process.env.LDAP_URL) config.ldap.url = process.env.LDAP_URL;
@@ -63,6 +79,16 @@ if (backendKind === 'nss') {
     groupPrefix: process.env.NSS_GROUP_PREFIX || '',
   });
 } else {
+  // The LDAP backend needs real bind credentials, which the example config
+  // does not have. Fail loudly rather than emitting confusing bind errors.
+  if (usingExampleConfig) {
+    console.error(
+      `DIRECTORY_BACKEND=ldap requires real credentials, but no ${configPath} was found.\n` +
+      `Copy config/config.yaml.example to config/config.yaml and fill in your LDAP settings,\n` +
+      `or run the read-only NSS backend with DIRECTORY_BACKEND=nss.`
+    );
+    process.exit(1);
+  }
   ldapClient = LdapClient.getInstance(config.ldap);
   backend = new LdapBackend(ldapClient, config);
 }
