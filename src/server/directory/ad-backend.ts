@@ -52,6 +52,21 @@ export class AdBackend implements DirectoryBackend {
         );
       }
     }
+
+    // allowedOus is matched as a DN suffix, so a single-RDN entry such as
+    // "DC=edu" would authorise writes across the whole directory. That shape
+    // is almost always a DN split on its own commas rather than an intended
+    // scope, so refuse it rather than silently granting far more than meant.
+    for (const ou of this.ad.safety?.allowedOus ?? []) {
+      if (!ou.includes('=') || !ou.includes(',')) {
+        throw new Error(
+          `ad.safety.allowedOus entry "${ou}" is not a full DN. Writes are ` +
+          `authorised by DN suffix, so a partial value like this can match far ` +
+          `more of the directory than intended. Separate multiple DNs with ';' ` +
+          `(commas are part of a DN, not separators).`
+        );
+      }
+    }
   }
 
   // Writes are opt-in. Until safety.writeEnabled is set, the routes' existing

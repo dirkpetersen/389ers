@@ -30,12 +30,16 @@ const bool = (key: string): boolean | undefined => {
   return /^(1|true|yes|on)$/i.test(v);
 };
 
-// Comma-separated. DNs contain commas, so allow ';' as an alternative separator
-// and use it when any entry looks like a DN.
+// A DN contains commas, so a comma cannot also separate DNs: splitting
+// "OU=Groups,DC=onid,DC=oregonstate,DC=edu" on commas yields the fragment
+// "DC=edu", which as an allowedOus suffix would match the entire directory.
+// Semicolon is therefore the separator whenever the value looks like a DN,
+// and commas only separate plain names such as protectedNames.
 const list = (key: string): string[] | undefined => {
   const v = str(key);
   if (v === undefined) return undefined;
-  const sep = v.includes(';') ? ';' : ',';
+  const looksLikeDn = v.includes('=');
+  const sep = v.includes(';') || looksLikeDn ? ';' : ',';
   return v.split(sep).map((s) => s.trim()).filter(Boolean);
 };
 
