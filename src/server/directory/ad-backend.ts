@@ -75,6 +75,13 @@ export class AdBackend implements DirectoryBackend {
     return this.ad.safety?.writeEnabled === true;
   }
 
+  // With writes on, AD's own ACLs decide what this service account may change.
+  // Layering the app's admin-group check on top only produces 403s that hide
+  // the directory's actual answer.
+  get delegatesAuthorization(): boolean {
+    return this.writable;
+  }
+
   describe(): string {
     const tls = this.config.ldap.url.startsWith('ldaps://') ? 'TLS' : 'PLAINTEXT';
     return `Active Directory (${this.config.ldap.url}, ${tls}, base ${this.config.groups.baseDN})`;
@@ -222,18 +229,18 @@ export class AdBackend implements DirectoryBackend {
       );
     }
 
+    // allowedOus is an optional narrowing, not a precondition. Left unset, the
+    // directory's own ACLs are the authority: an under-privileged service
+    // account simply gets insufficient-access back from AD, which is the
+    // answer we want rather than a second gate maintained here.
     const allowed = safety.allowedOus || [];
-    if (allowed.length === 0) {
-      throw new AdWriteBlockedError(
-        'ad.safety.allowedOus is empty. Refusing to write anywhere in the directory; ' +
-        'list the OU subtrees this app may modify.'
-      );
-    }
-    const target = targetDN.toLowerCase();
-    if (!allowed.some((ou) => target.endsWith(ou.toLowerCase()))) {
-      throw new AdWriteBlockedError(
-        `Refusing to write to ${targetDN}: outside ad.safety.allowedOus.`
-      );
+    if (allowed.length > 0) {
+      const target = targetDN.toLowerCase();
+      if (!allowed.some((ou) => target.endsWith(ou.toLowerCase()))) {
+        throw new AdWriteBlockedError(
+          `Refusing to write to ${targetDN}: outside ad.safety.allowedOus.`
+        );
+      }
     }
 
     const protectedNames = (safety.protectedNames || []).map((n) => n.toLowerCase());

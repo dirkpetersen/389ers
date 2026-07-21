@@ -13,6 +13,14 @@ export interface DirectoryBackend {
   // reject write attempts with 501 rather than failing deeper in the stack.
   readonly writable: boolean;
 
+  // True when the directory itself is the authority for who may change what,
+  // so the app should not impose a second admin gate of its own. Set by the AD
+  // backend once writes are enabled: AD enforces its own ACLs, and an
+  // under-privileged service account gets insufficient-access back — which is
+  // a more accurate answer than a 403 invented here from group membership the
+  // app happens to be able to see.
+  readonly delegatesAuthorization?: boolean;
+
   // Human-readable description of where data is coming from, for /api/health.
   describe(): string;
 

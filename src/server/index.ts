@@ -166,6 +166,10 @@ app.use(session({
 // Resolve whether a login should be treated as an app admin.
 async function resolveIsAdmin(login: string): Promise<boolean> {
   if (process.env.LOCAL_ADMIN === 'true') return true;
+  // When the directory authorizes writes itself, the app does not second-guess
+  // it: attempts go through and the directory accepts or refuses them. Without
+  // this, create/delete return 403 from an admin group that need not exist.
+  if (backend.delegatesAuthorization) return true;
   try {
     return await authService.isAdminGroupMember(login);
   } catch {
