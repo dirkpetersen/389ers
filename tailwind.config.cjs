@@ -1,5 +1,6 @@
 /** @type {import('tailwindcss').Config} */
-export default {
+// CommonJS on purpose — see the note in postcss.config.cjs.
+module.exports = {
   content: [
     "./src/client/index.html",
     "./src/client/src/**/*.{js,ts,jsx,tsx}",
