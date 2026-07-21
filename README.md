@@ -4,51 +4,102 @@ Web-based frontend for managing Unix POSIX groups on 389 Directory Server for HP
 
 <img width="1251" height="838" alt="RCO Group Manager screenshot" src="https://github.com/user-attachments/assets/9e3c63c4-6718-4658-8308-c76ae85f5871" />
 
-## Quick Start
+## Quick Start — Active Directory over LDAPS (default)
 
-### Prerequisites
+On a Linux host joined to AD with SSSD, this is the whole setup. No LDAP server
+to run, no service account, no Docker.
 
-- Docker and docker-compose
-- Node.js 18+ (for development mode only)
+### 1. Install prerequisites
 
-### Option 1: Docker (Recommended for Production)
+```bash
+# Ubuntu/Debian
+sudo apt-get install ldap-utils openssl
+# RHEL/AlmaLinux
+sudo yum install openldap-clients openssl
+```
+
+Node.js 18+ is also required.
+
+### 2. Configure the host for LDAPS
+
+```bash
+sudo ./ldaps-init -v
+```
+
+This discovers your domain controllers from `/etc/sssd/sssd.conf` (or
+`/etc/krb5.conf`), fetches the CA chain including the root AD publishes, and
+writes `~/.ldaprc` with every DC, your base DN, and your bind DN. `sudo` is
+needed to read `sssd.conf`; the config is still written to *your* home
+directory. You are prompted for your password and offered the option to save it
+to `~/.ldappass` (mode `600`) once the bind actually succeeds.
+
+Verify it worked — this needs no `-D` or `-H`, since `~/.ldaprc` now carries them:
+
+```bash
+ldapsearch -x -y ~/.ldappass "(sAMAccountName=$USER)" cn mail
+```
+
+### 3. Run the app
+
+```bash
+npm install && npm run build
+
+NODE_ENV=production DIRECTORY_BACKEND=nss REQUIRE_LOGIN=ldaps \
+  LDAP_AUTH_URL=$(awk '/^URI/{print $2}' ~/.ldaprc) \
+  LDAP_CA_CERT=~/.ldap-cert.pem \
+  LDAP_UPN_SUFFIX=example.edu \
+  npm start
+```
+
+Open http://localhost:8088 and log in with your **directory** account.
+`REQUIRE_LOGIN=ldaps` means a successful LDAPS bind is the only way in — the
+shared `admin`/`changeme` account is disabled. Set `LDAP_UPN_SUFFIX` to your AD
+domain (the part after `@` in your `user@domain` login).
+
+This mode is **read-only** — group management needs a writable backend, see
+[Directory Backends](#directory-backends). Full detail, including certificate
+chain handling and every option, is in **[docs/LDAPS.md](./docs/LDAPS.md)**.
+
+<details>
+<summary><b>Variant: trust the local OS user instead of prompting</b></summary>
+
+Drop `REQUIRE_LOGIN` to sign in automatically as the OS user running the
+process — convenient on a workstation you already own. This binds to
+`127.0.0.1` only, because it grants the app's identity to anyone who can reach
+the port:
+
+```bash
+NODE_ENV=production DIRECTORY_BACKEND=nss AUTH_MODE=local NSS_GROUP_PREFIX=grp- npm start
+```
+</details>
+
+## Alternative Setups
+
+<details>
+<summary><b>Docker with a local 389 DS / OpenLDAP (read-write)</b></summary>
+
+Needed if you want to **manage** groups rather than only read them.
 
 ```bash
 docker-compose up -d
 ```
 
-Open http://localhost:8088 and login with `admin` / `changeme`
+Open http://localhost:8088 and log in with `admin` / `changeme`.
+**Change that password before exposing the app** — see [Configuration](#configuration).
+</details>
 
-### Option 2: Development Mode (Hot Reload)
+<details>
+<summary><b>Development mode (hot reload)</b></summary>
 
 ```bash
-# Start LDAP in Docker
-docker-compose up -d 389-ds
-
-# Wait for healthy status
-docker-compose ps
-
-# Install deps and start dev server
+docker-compose up -d 389-ds   # start LDAP
+docker-compose ps             # wait for healthy status
 npm install
 npm run dev
 ```
 
-Open http://localhost:5173 and login with `admin` / `changeme`
-
-### Option 3: Read-only against Active Directory (no LDAP setup)
-
-On a Linux host already joined to AD with SSSD, the app can read the directory
-through `getent(1)` using the machine's existing authentication — no LDAP
-server, no bind credentials, no Docker:
-
-```bash
-npm install && npm run build
-NODE_ENV=production DIRECTORY_BACKEND=nss AUTH_MODE=local NSS_GROUP_PREFIX=grp- npm start
-```
-
-Open http://127.0.0.1:8088 — you are signed in automatically as the OS user
-running the process. This mode is **read-only**; see
-[Directory Backends](#directory-backends) below.
+Open http://localhost:5173 and log in with `admin` / `changeme`.
+</details>
 
 ### First Time Setup: Import Users (LDAP backend only)
 
@@ -250,6 +301,7 @@ cp config/config.yaml.example config/config.yaml   # then fill in your LDAP sett
 
 ## Documentation
 
+- **[docs/LDAPS.md](./docs/LDAPS.md)** - LDAPS setup, `ldaps-init`, and app authentication
 - **[docs/BUILD.md](./docs/BUILD.md)** - Building 389 DS from source
 - **[docs/QA.md](./docs/QA.md)** - Complete requirements
 - **[docs/GETTING_STARTED.md](./docs/GETTING_STARTED.md)** - Quick start guide

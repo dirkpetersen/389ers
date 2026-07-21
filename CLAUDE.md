@@ -34,6 +34,8 @@ npm run lint             # ESLint - currently broken, no eslint config file exis
 
 There is no test framework configured.
 
+**Node 18 compatibility**: the dev box runs Node 18. `postcss.config.cjs` and `tailwind.config.cjs` must keep the `.cjs` extension and `module.exports` — `package.json` has no `"type": "module"`, and Node 18 (unlike 22) won't reparse a `.js` config containing `export` syntax. For the same reason, toolchain upgrades need a Node-18 check: Vite 8 requires Node `^20.19 || >=22.12` and hard-fails the build here.
+
 ## Docker Setup
 
 ```bash
@@ -45,7 +47,7 @@ docker-compose down -v   # Stop and wipe LDAP data volumes
 
 **Important**: `docker-compose.yml` runs `osixia/openldap` (plain OpenLDAP), not actual 389 Directory Server, as the dev/prod LDAP backend. This is a stand-in — schema and behavior (e.g. `posixGroup`/`memberUid` vs `groupOfNames`/`member`) may not exactly match a real 389 DS instance. A real 389 DS build exists separately under `./install/` (see below) for when server-accurate testing is needed.
 
-First-time setup requires importing AD-exported users via LDIF (see `scripts/ad-users-export.ldif`, `scripts/init-ldap.ldif`); import order matters — users before groups (group `member`/`managedBy` reference user DNs).
+First-time setup requires importing AD-exported users via LDIF. `scripts/init-ldap.ldif` is tracked; the user LDIF is *generated* by the PowerShell exporters in `scripts/` (`Export-ADUsers.ps1`, `Export-ADGroups.ps1`) and is not in the repo. Import order matters — users before groups (group `member`/`managedBy` reference user DNs).
 
 ## Directory Backends
 
@@ -78,7 +80,18 @@ Other NSS constraints worth knowing:
 
 `AUTH_MODE=local` trusts the OS identity of the process owner and populates the session from `os.userInfo()`, with no login prompt — for running the tool as yourself on a workstation already authenticated via SSSD/Kerberos. It binds to `127.0.0.1` by default (override with `BIND_HOST`); **only safe on loopback**, since it grants the app's identity to anyone who can reach the port. `LOCAL_ADMIN=true` forces the admin flag on.
 
-`AUTH_MODE=password` (default) uses the local `admin` account from `config.yaml`. LDAP bind-as-user is still unimplemented (see Authorization Model below).
+`AUTH_MODE=password` (default) accepts the local `admin` account from `config.yaml`, then falls back to verifying the password with an LDAP bind as that user (see Authorization Model below).
+
+`REQUIRE_LOGIN=ldaps` hardens the site to directory-verified logins only. It suppresses **both** other ways in — the passwordless local-trust session and the shared `config.yaml` admin account — so a successful LDAPS bind becomes the only path to a session. It composes with either `AUTH_MODE`, and because it removes the local-trust risk, `AUTH_MODE=local` no longer forces the loopback bind default.
+
+Since nothing remains to fall back to, a misconfiguration here does not degrade — it locks everyone out. The server therefore validates the preconditions at startup and **exits rather than serving a site nobody can enter**: the URL must be `ldaps://`, and with the NSS backend either `upnSuffix` or `bindDnTemplate` must be set (NSS synthesizes a placeholder `uid=<name>` DN that cannot be bound with). A missing `tlsCaCert` warns rather than exits, since the system trust store may suffice — though an internal AD root usually is not in it.
+
+```bash
+NODE_ENV=production DIRECTORY_BACKEND=nss REQUIRE_LOGIN=ldaps \
+  LDAP_AUTH_URL=ldaps://dc1.example.edu:636 \
+  LDAP_CA_CERT=~/.ldap-cert.pem LDAP_UPN_SUFFIX=example.edu \
+  node dist/server/index.js
+```
 
 ```bash
 # Read-only UI against AD via SSSD, running as the current user
@@ -122,8 +135,12 @@ src/
 │   ├── hooks/useDebounce.ts
 │   └── index.css             # Tailwind directives
 └── server/
-    ├── index.ts              # Express entry: config load, session, auth routes, route mounting
+    ├── index.ts              # Express entry: config load, backend selection, session, auth routes, route mounting
     ├── types/ldap.ts          # Shared TypeScript interfaces (LdapUser, LdapGroup, AppConfig, ...)
+    ├── directory/
+    │   ├── backend.ts         # DirectoryBackend interface + ReadOnlyBackendError (the seam routes code against)
+    │   ├── ldap-backend.ts    # LDAP implementation (writable)
+    │   └── nss.ts             # NssBackend: getent(1) via execFile (read-only)
     ├── ldap/client.ts         # Singleton LDAP client wrapper (search/add/modify/delete, filter/DN escaping)
     ├── auth/authorization.ts  # canManageGroup / admin-group / nested-group-membership checks
     ├── audit/logger.ts        # Appends JSON-lines audit entries to permissions-changes.log
@@ -143,13 +160,32 @@ src/
 
 ## LDAP Schema Duality
 
-Groups are handled as **either** `posixGroup` (member UIDs in `memberUid`) **or** `groupOfNames` (member DNs in `member`) — the codebase checks which attribute is populated and branches accordingly (`memberUid.length > 0` → posixGroup path). This dual handling is duplicated across `routes/groups.ts`, `routes/members.ts`, `routes/resolved.ts`, and `auth/authorization.ts`; when changing member-resolution logic, update all of them consistently. New groups are always created as `posixGroup` (`routes/groups.ts`'s `POST /`), but existing/imported groups may be `groupOfNames`.
+Groups are handled as **either** `posixGroup` (member UIDs in `memberUid`) **or** `groupOfNames` (member DNs in `member`) — the codebase checks which attribute is populated and branches accordingly (`memberUid.length > 0` → posixGroup path). New groups are always created as `posixGroup`, but existing/imported groups may be `groupOfNames`.
+
+The branch lives in two layers, and changing member-resolution logic means touching both:
+- **Writes** are centralized in `directory/ldap-backend.ts` (`usesMemberUid()` picks the attribute for add/remove).
+- **Reads** still branch at the call sites: `routes/groups.ts`, `routes/members.ts`, `routes/resolved.ts`, and `auth/authorization.ts` each pick between `memberUid` and `member` themselves. Routes never parse DNs, though — `backend.resolveMember()` accepts either form.
 
 ## Authorization Model
 
 - Groups have a `managedBy` attribute for delegation; `AuthorizationService.canManageGroup` grants access if the user is a direct or nested member of any DN in `managedBy`, or a member of the super-admin group `cn=389ers-admins`.
+- **Authorization is expressed in login names, not DNs**, because NSS-sourced accounts have no DN. `authorization.ts` pulls RDN values out of references (`rdnValue`) so full DNs and the bare `cn=name`/`uid=name` forms NSS emits both work. `isMemberOf` recurses through nested groups with a `visited` set guarding circular membership.
 - Session-based auth with httpOnly cookies (`isAdmin` flag drives create/delete group authorization; per-group management uses `canManageGroup`).
-- **Login is only partially implemented**: `POST /api/auth/login` checks the local `admin`/`changeme` account from `config.yaml`; real LDAP user authentication (binding as the user to verify their password) is stubbed out and always returns 401. Don't assume LDAP-authenticated users can log in yet.
+- `POST /api/auth/login` tries the local `admin` account from `config.yaml` first, then verifies the password by **binding to the directory as that user** (`auth/ldap-auth.ts`).
+
+### LDAP user authentication
+
+`authenticateUser()` opens a **short-lived connection per attempt**. It deliberately does not reuse the `LdapClient` singleton: that connection is bound as the service account and shared across concurrent requests, so re-binding it as an end user would swap the effective identity out from under unrelated in-flight operations.
+
+The bind identity is derived in this order — `ldap.bindDnTemplate`, then `ldap.upnSuffix` (AD-style `<login>@<suffix>`), then a DN lookup through the directory backend. Logins are restricted to `[A-Za-z0-9._-]` rather than escaped per-context, which closes DN- and filter-injection in one move.
+
+Two failure modes are easy to get wrong:
+- **An empty password is rejected before any bind is attempted.** A simple bind with a DN and an empty password is an *unauthenticated bind* (RFC 4513 §5.1.2): AD returns success while granting nothing, so it would otherwise read as a valid login.
+- **Only LDAP result code 49** (`invalidCredentials`) maps to a 401. Anything else is an operational fault and returns 503, so an unreachable DC is never reported to users as a wrong password. Internally the reason is logged; the client always sees a generic `Invalid credentials` so the endpoint cannot enumerate accounts.
+
+The session id is regenerated on successful login (session fixation).
+
+**Certificate chains.** AD typically presents leaf + intermediate but not the root. OpenLDAP's CLI tools accept that partial chain, but Node, Java, and Python do not — they build to a self-signed root or fail with `unable to get issuer certificate`. `ldaps-init` therefore pulls the published root from the forest's Configuration NC (`CN=Certification Authorities,CN=Public Key Services,CN=Services,<configurationNamingContext>`) and appends it, dropping expired generations of renewed CA keys. Note the Configuration NC lives under the **forest root**, which may differ from the domain NC — read it from the RootDSE rather than assuming.
 
 ## Related Documentation
 

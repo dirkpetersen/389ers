@@ -13,6 +13,7 @@
 .env.local
 *.local
 config/config.yaml
+.ldappass
 
 # Logs
 *.log

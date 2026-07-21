@@ -14,43 +14,78 @@ export class LdapBackend implements DirectoryBackend {
     return `LDAP (${this.config.ldap.url}, base ${this.config.ldap.baseDN})`;
   }
 
+  private get userFilter(): string {
+    return this.config.ldap.userFilter || '(objectClass=person)';
+  }
+
   async searchUsers(query: string, limit: number): Promise<LdapUser[]> {
     const q = this.client.escapeFilter(query);
-    const filter = `(|(uid=*${q}*)(cn=*${q}*)(mail=*${q}*))`;
+    const attr = this.client.loginAttr;
+    const filter = `(&${this.userFilter}(|(${attr}=*${q}*)(cn=*${q}*)(mail=*${q}*)))`;
     return this.client.searchUsers(this.config.users.baseDN, filter, limit);
   }
 
   async getUser(login: string): Promise<LdapUser | null> {
-    return this.client.getUserByUid(this.config.users.baseDN, login);
+    const l = this.client.escapeFilter(login);
+    const users = await this.client.searchUsers(
+      this.config.users.baseDN,
+      `(&${this.userFilter}(${this.client.loginAttr}=${l}))`,
+      1
+    );
+    return users.length > 0 ? users[0] : null;
+  }
+
+  // Which entries count as manageable groups. Configurable because Active
+  // Directory has no posixGroup objects — it puts gidNumber on `group` entries
+  // instead — so a fixed (objectClass=posixGroup) finds nothing there.
+  private get groupFilter(): string {
+    return this.config.ldap.groupFilter || '(objectClass=posixGroup)';
   }
 
   async searchGroups(query: string, limit: number): Promise<LdapGroup[]> {
-    let filter = '(objectClass=posixGroup)';
+    let filter = this.groupFilter;
     if (query) {
       const q = this.client.escapeFilter(query);
-      filter = `(&(objectClass=posixGroup)(|(cn=*${q}*)(description=*${q}*)))`;
+      filter = `(&${this.groupFilter}(|(cn=*${q}*)(description=*${q}*)))`;
     }
     return this.client.searchGroups(this.config.groups.baseDN, filter, limit);
   }
 
   async getGroup(name: string): Promise<LdapGroup | null> {
-    return this.client.getGroupByCn(this.config.groups.baseDN, name);
+    const cn = this.client.escapeFilter(name);
+    const groups = await this.client.searchGroups(
+      this.config.groups.baseDN,
+      `(&${this.groupFilter}(cn=${cn}))`,
+      1
+    );
+    return groups.length > 0 ? groups[0] : null;
   }
 
   async getManagers(group: LdapGroup): Promise<string[]> {
     return group.managedBy;
   }
 
-  // posixGroup memberUid values are bare uids; groupOfNames member values are
-  // full DNs of the form uid=<login>,ou=People,...
+  // memberUid holds bare login names; member holds full DNs. The DN form
+  // varies by directory (uid=... on 389 DS, CN=... on AD), so read the entry at
+  // that DN rather than parsing it. Returns null when the DN is not a user —
+  // which is how callers detect a nested group.
   async resolveMember(memberRef: string): Promise<LdapUser | null> {
-    const dnMatch = memberRef.match(/^uid=([^,]+),/i);
-    const login = dnMatch ? dnMatch[1] : memberRef;
-    return this.getUser(login);
+    if (memberRef.includes('=')) {
+      try {
+        const found = await this.client.searchUsers(memberRef, this.userFilter, 1, 'base');
+        if (found.length > 0) return found[0];
+      } catch {
+        // No such object, or not readable: fall through to the RDN heuristic.
+      }
+      const rdn = memberRef.match(/^[a-zA-Z]+=([^,]+)/);
+      return rdn ? this.getUser(rdn[1]) : null;
+    }
+    return this.getUser(memberRef);
   }
 
   async getUsedGids(): Promise<number[]> {
-    return this.client.getUsedGids(this.config.groups.baseDN);
+    const groups = await this.client.searchGroups(this.config.groups.baseDN, this.groupFilter, 10000);
+    return groups.map((g) => g.gidNumber).filter((g): g is number => typeof g === 'number');
   }
 
   async createGroup(cn: string, gidNumber: number, description: string, memberLogins: string[]): Promise<string> {

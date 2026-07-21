@@ -65,14 +65,16 @@ async function resolveInto(
 
   // groupOfNames style: member holds DNs, which may point at users or groups.
   for (const ref of group.member) {
-    const userMatch = ref.match(/^uid=([^,]+)/i);
-    if (userMatch) {
-      const user = await backend.resolveMember(ref);
-      if (user) record(resolved, user.uid, { user, path: [...path], direct: isDirect });
+    // The entry type cannot be inferred from the RDN: Active Directory names
+    // both users and groups with CN=, so only an actual lookup distinguishes
+    // them. Try the reference as a user first; a miss means it is a group.
+    const user = await backend.resolveMember(ref);
+    if (user) {
+      record(resolved, user.uid, { user, path: [...path], direct: isDirect });
       continue;
     }
 
-    const groupMatch = ref.match(/^cn=([^,]+)/i);
+    const groupMatch = ref.match(/^[a-zA-Z]+=([^,]+)/);
     if (groupMatch) {
       const nested = await backend.getGroup(groupMatch[1]);
       if (nested) {

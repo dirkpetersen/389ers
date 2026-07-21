@@ -87,6 +87,26 @@ export interface LdapConfig {
   baseDN: string;
   bindDN: string;
   bindPassword: string;
+  // PEM bundle for verifying the server cert on ldaps:// URLs. `ldaps-init`
+  // writes one to ~/.ldap-cert.pem. Omit to use the system trust store.
+  tlsCaCert?: string;
+  // How a login becomes a bind identity when authenticating an end user.
+  // Set at most one; otherwise the user's DN is looked up via the backend.
+  bindDnTemplate?: string; // "uid={login},ou=People,dc=example,dc=edu"
+  upnSuffix?: string;      // AD-style: <login>@<upnSuffix>
+  // Which directory entries count as manageable POSIX groups. 389 DS/OpenLDAP
+  // use posixGroup; Active Directory has no posixGroup objects at all and
+  // instead hangs gidNumber off ordinary `group` entries, so AD needs
+  //   (&(objectClass=group)(gidNumber=*))
+  groupFilter?: string;
+  // Which entries count as users. Needed because users.baseDN is often the
+  // whole domain root on AD (there is no ou=People), so an unconstrained search
+  // also matches groups and computer accounts.
+  userFilter?: string;
+  // Attribute holding the login name: uid for RFC2307, sAMAccountName for AD.
+  loginAttr?: string;
+  // Search timeout. Domain-wide AD searches exceed the old 5s default.
+  timeoutMs?: number;
 }
 
 export interface GroupsConfig {

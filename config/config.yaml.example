@@ -11,6 +11,16 @@ ldap:
   bindDN: "cn=admin,dc=rco,dc=university,dc=edu"
   bindPassword: "changeme"  # Set a real password before using DIRECTORY_BACKEND=ldap
 
+  # --- user authentication (binding as the end user to verify a password) ---
+  # PEM bundle used to verify the server certificate on ldaps:// URLs.
+  # `ldaps-init` writes a complete chain to ~/.ldap-cert.pem.
+  # tlsCaCert: "/home/youruser/.ldap-cert.pem"
+  #
+  # How a login becomes a bind identity. Set at most one; with neither, the
+  # user's DN is looked up through the directory backend first.
+  # upnSuffix: "onid.oregonstate.edu"          # AD: binds as <login>@<suffix>
+  # bindDnTemplate: "uid={login},ou=People,dc=rco,dc=university,dc=edu"
+
 groups:
   baseDN: "ou=Groups,dc=rco,dc=university,dc=edu"
   gidMin: 300000

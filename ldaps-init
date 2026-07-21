@@ -1,0 +1,360 @@
+#!/usr/bin/env bash
+#
+# ldaps-init — discover AD domain controllers and write ~/.ldaprc for LDAPS.
+#
+# Reads DCs from sssd.conf / krb5.conf, fetches the CA chain from the first
+# responding DC, binds as user@domain to look up the full bind DN, and writes
+# ~/.ldaprc (URI, BASE, BINDDN, TLS_CACERT).
+#
+# Under sudo the config is written to the invoking user's home, not root's, so
+# 'sudo ldaps-init' can read a root-only sssd.conf yet still configure you.
+#
+# Usage: ldaps-init [-v] [-f] [user@domain]
+#   -v  verbose      -f  overwrite an existing rc file
+#
+# The bind identity is the first argument, else $LDAP_BIND_DN, else
+# <invoking-user>@<realm>. Bind is skipped entirely with -n.
+#
+# Environment:
+#   LDAPRC          rc file            (default <home>/.ldaprc)
+#   LDAP_CERT       CA cert file       (default <home>/.ldap-cert.pem)
+#   LDAP_BIND_DN    bind identity, overridden by the positional argument
+#   LDAP_PASS_FILE  password file      (default <home>/.ldappass; prompts if absent)
+#   KRB5_CONFIG     (default /etc/krb5.conf)
+#   SSSD_CONF       (default /etc/sssd/sssd.conf)
+#
+set -u
+
+KRB5_CONFIG="${KRB5_CONFIG:-/etc/krb5.conf}"
+SSSD_CONF="${SSSD_CONF:-/etc/sssd/sssd.conf}"
+VERBOSE=0
+FORCE=0
+NOBIND=0
+ARG_ID=""
+
+log()  { printf '%s\n' "$*" >&2; }
+vlog() { [ "$VERBOSE" -eq 1 ] && printf '  %s\n' "$*" >&2; return 0; }
+die()  { log "ERROR: $*"; exit 1; }
+
+# ldaps://host:636 -> host
+host_of() { printf '%s' "$1" | sed -E 's#^ldaps?://##; s#[:/].*$##'; }
+
+# example.com -> dc=example,dc=com
+dot_to_dn() { printf '%s' "$1" | tr 'A-Z' 'a-z' | sed 's/^/dc=/; s/\./,dc=/g'; }
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -v) VERBOSE=1 ;;
+    -f) FORCE=1 ;;
+    -n) NOBIND=1 ;;
+    -*) die "unknown option: $1 (usage: ldaps-init [-v] [-f] [-n] [user@domain])" ;;
+    *)  ARG_ID="$1" ;;
+  esac
+  shift
+done
+
+for tool in openssl awk sed ldapwhoami ldapsearch; do
+  command -v "$tool" >/dev/null 2>&1 || die "'$tool' not found in PATH (install: apt-get install ldap-utils openssl / yum install openldap-clients openssl)"
+done
+
+# ---- whose config are we writing? ------------------------------------------
+# Under sudo, $HOME is root's; target the invoking user instead so the files
+# land where they actually get used. Their passwd home may be an AD path that
+# differs from /home/<user>, so key off SUDO_USER directly.
+if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+  TARGET_USER="$SUDO_USER"
+  TARGET_HOME="/home/$SUDO_USER"
+  [ -d "$TARGET_HOME" ] || die "sudo: $TARGET_HOME does not exist; set LDAPRC/LDAP_CERT explicitly"
+  vlog "sudo detected: writing config for $TARGET_USER in $TARGET_HOME"
+else
+  TARGET_USER="$(id -un)"
+  TARGET_HOME="$HOME"
+fi
+
+RC="${LDAPRC:-$TARGET_HOME/.ldaprc}"
+CA_FILE="${LDAP_CERT:-$TARGET_HOME/.ldap-cert.pem}"
+PASS_FILE="${LDAP_PASS_FILE:-$TARGET_HOME/.ldappass}"
+
+if [ "$FORCE" -ne 1 ] && [ -r "$RC" ]; then
+  log "$RC already exists; use -f to regenerate"
+  exit 0
+fi
+
+# ---- discover DCs ----------------------------------------------------------
+# Both sources emit bare hostnames or ldap[s]:// URIs, comma- or space-separated.
+DCS=""
+REALM=""
+AD_DOMAIN=""
+
+# krb5.conf: default_realm plus that realm's kdc entries
+if [ -r "$KRB5_CONFIG" ]; then
+  REALM="$(awk '
+    /^[[:space:]]*default_realm[[:space:]]*=/ { sub(/^[^=]*=[[:space:]]*/, ""); print; exit }
+  ' "$KRB5_CONFIG")"
+  [ -n "$REALM" ] && vlog "krb5 realm: $REALM"
+
+  DCS="$DCS $(awk -v realm="$REALM" '
+    tolower($0) ~ tolower("^\\[" realm "\\]") { inrealm = 1; next }
+    inrealm && /^[[:space:]]*\[/ { exit }
+    inrealm && tolower($0) ~ /^[[:space:]]*kdc[[:space:]]*=/ {
+      sub(/^[^=]*=[[:space:]]*/, ""); print
+    }
+  ' "$KRB5_CONFIG")"
+else
+  vlog "no krb5.conf at $KRB5_CONFIG"
+fi
+
+# sssd.conf: first id_provider=ad domain, and its server lists.
+# Buffered per-domain so key order within the section doesn't matter.
+if [ -r "$SSSD_CONF" ]; then
+  sssd_out="$(awk '
+    /^[[:space:]]*\[domain\// {
+      d = $0; sub(/^[^\/]*\//, "", d); sub(/\].*$/, "", d); next
+    }
+    /^[[:space:]]*\[/ { d = ""; next }
+    d == "" || /^[[:space:]]*[#;]/ { next }
+    tolower($0) ~ /^[[:space:]]*id_provider[[:space:]]*=[[:space:]]*ad[[:space:]]*$/ {
+      if (!first) first = d
+    }
+    tolower($0) ~ /^[[:space:]]*(ldap_uri|ad_server)[[:space:]]*=/ {
+      v = $0; sub(/^[^=]*=[[:space:]]*/, "", v); pri[d] = pri[d] " " v
+    }
+    tolower($0) ~ /^[[:space:]]*ad_backup_server[[:space:]]*=/ {
+      v = $0; sub(/^[^=]*=[[:space:]]*/, "", v); bak[d] = bak[d] " " v
+    }
+    # Backups last, so failover reaches them only after every primary.
+    END { if (first) { print first; print pri[first] " " bak[first] } }
+  ' "$SSSD_CONF")"
+
+  AD_DOMAIN="$(printf '%s' "$sssd_out" | sed -n 1p)"
+  DCS="$DCS $(printf '%s' "$sssd_out" | sed -n 2p)"
+  [ -n "$AD_DOMAIN" ] && vlog "sssd AD domain: $AD_DOMAIN"
+else
+  vlog "cannot read $SSSD_CONF (needs root)"
+fi
+
+# Normalize: split on commas/space, strip any :port, prefix ldaps://, dedupe.
+DCS="$(printf '%s' "$DCS" | tr ',' ' ' | tr -s ' ' '\n' \
+  | sed -E '/^$/d; s#^ldaps?://##; s#[:/].*$##; s#^#ldaps://#; s#$#:636#' \
+  | awk '!seen[$0]++' | tr '\n' ' ')"
+DCS="${DCS% }"
+
+if [ -z "$DCS" ]; then
+  [ "$EUID" -ne 0 ] && [ -f "$SSSD_CONF" ] \
+    && die "no DCs found; $SSSD_CONF needs root — try 'sudo ldaps-init'"
+  die "no domain controllers found in $KRB5_CONFIG or $SSSD_CONF"
+fi
+vlog "DCs: $DCS"
+
+# ---- base DN ---------------------------------------------------------------
+# Prefer a dotted realm/domain; a short name like "onid" carries no suffix, so
+# fall back to the DC hostname's domain part.
+DOMAIN="${REALM:-$AD_DOMAIN}"
+case "$DOMAIN" in
+  *.*) : ;;
+  *)   DOMAIN="$(host_of "${DCS%% *}" | sed 's/^[^.]*\.//')" ;;
+esac
+BASE_DN="$(dot_to_dn "$DOMAIN")"
+vlog "base DN: $BASE_DN"
+
+# ---- fetch CA cert ---------------------------------------------------------
+# All DCs in a domain share an issuing CA, so the first that answers is enough.
+# Everything after the leaf in the presented chain is CA material.
+for uri in $DCS; do
+  host="$(host_of "$uri")"
+  if echo | openssl s_client -connect "$host:636" -showcerts 2>/dev/null \
+       | awk '/-----BEGIN CERTIFICATE-----/{n++} n>=2' > "$CA_FILE.tmp" \
+     && [ -s "$CA_FILE.tmp" ] \
+     && openssl x509 -in "$CA_FILE.tmp" -noout >/dev/null 2>&1
+  then
+    mv "$CA_FILE.tmp" "$CA_FILE"
+    chmod 644 "$CA_FILE"
+    vlog "CA cert from $host -> $CA_FILE"
+    break
+  fi
+  rm -f "$CA_FILE.tmp"
+  vlog "no usable cert from $host"
+done
+[ -r "$CA_FILE" ] || log "WARNING: no CA cert fetched; TLS verification will fail"
+
+# Read a PEM bundle on stdin, emit each distinct certificate once.
+dedupe_certs() {
+  local tmpd f fp seen=""
+  tmpd="$(mktemp -d)" || return 1
+  awk -v d="$tmpd" '/-----BEGIN CERTIFICATE-----/ { n++ } n { print > (d "/" n ".pem") }'
+  for f in "$tmpd"/*.pem; do
+    [ -e "$f" ] || continue
+    fp="$(openssl x509 -in "$f" -noout -fingerprint -sha256 2>/dev/null)" || continue
+    case " $seen " in *" $fp "*) continue ;; esac
+    # AD keeps every past generation of a renewed CA key; expired anchors are
+    # dead weight in the bundle.
+    openssl x509 -in "$f" -noout -checkend 0 >/dev/null 2>&1 || continue
+    seen="$seen $fp"
+    cat "$f"
+  done
+  rm -rf "$tmpd"
+}
+
+# AD presents leaf + intermediate but usually not the root, and OpenLDAP is
+# content with that partial chain. Stricter TLS stacks (Node, Java, Python)
+# reject it: they build to a self-signed root or fail. The root is published in
+# the forest's Configuration NC, so append whatever the server left out.
+fetch_published_cas() {
+  local uri="$1" conf_nc b64 der pem
+  conf_nc="$(LDAPTLS_CACERT="$CA_FILE" ldapsearch -LLL -o ldif-wrap=no -x -H "$uri" \
+      -D "$BIND_ID" -y "$PASS_TMP" -b "" -s base configurationNamingContext 2>/dev/null \
+    | sed -n 's/^configurationNamingContext: //p')"
+  [ -n "$conf_nc" ] || { vlog "no configurationNamingContext; leaving chain as-is"; return 0; }
+
+  der="$(mktemp)"
+  LDAPTLS_CACERT="$CA_FILE" ldapsearch -LLL -o ldif-wrap=no -x -H "$uri" \
+      -D "$BIND_ID" -y "$PASS_TMP" \
+      -b "CN=Certification Authorities,CN=Public Key Services,CN=Services,$conf_nc" \
+      "(objectClass=certificationAuthority)" cACertificate 2>/dev/null \
+    | sed -n 's/^cACertificate:: //p' \
+    | while read -r b64; do
+        printf '%s' "$b64" | base64 -d > "$der" 2>/dev/null || continue
+        pem="$(openssl x509 -inform der -in "$der" 2>/dev/null)" || continue
+        printf '%s\n' "$pem"
+      done
+  rm -f "$der"
+}
+
+# ---- bind, then look up the full DN ----------------------------------------
+# Bind as a UPN (user@domain), which AD accepts, then search for that account's
+# real DN so the rc file can carry a BINDDN and commands need no -D.
+BIND_ID="${ARG_ID:-${LDAP_BIND_DN:-$TARGET_USER}}"
+BIND_DN=""
+BOUND=0
+PROMPTED=0
+
+# A bare username has no domain, so qualify it with the one discovered above
+# (krb5 realm, sssd domain, or the DC hostname). A full DN is left alone.
+case "$BIND_ID" in
+  *@* | *=*) : ;;
+  *) BIND_ID="$BIND_ID@${DOMAIN,,}"; vlog "qualified bare username -> $BIND_ID" ;;
+esac
+
+if [ "$NOBIND" -eq 1 ]; then
+  vlog "-n given; skipping bind"
+else
+  # ldapwhoami -y sends the file verbatim including any trailing newline, which
+  # AD rejects; bind from a stripped 0600 copy removed on exit.
+  PASS_TMP="$(mktemp "${TMPDIR:-/tmp}/.ldappass.XXXXXX")" || die "mktemp failed"
+  chmod 600 "$PASS_TMP"
+  trap 'rm -f "$PASS_TMP"' EXIT INT TERM
+
+  if [ -r "$PASS_FILE" ]; then
+    vlog "password from $PASS_FILE"
+    printf '%s' "$(cat "$PASS_FILE")" > "$PASS_TMP"
+  else
+    [ -t 0 ] || die "no $PASS_FILE and stdin is not a terminal; cannot prompt for a password"
+    printf 'Password for %s: ' "$BIND_ID" >&2
+    read -rs pw; printf '\n' >&2
+    printf '%s' "$pw" > "$PASS_TMP"
+    unset pw
+    PROMPTED=1
+  fi
+
+  # A DN with an empty password is an "unauthenticated bind" (RFC 4513): AD
+  # returns success but grants nothing, so the DN search would come back empty.
+  [ -s "$PASS_TMP" ] || die "empty password; refusing to attempt an unauthenticated bind"
+
+  # The account name for the sAMAccountName fallback is the UPN's local part.
+  ACCT="${BIND_ID%%@*}"
+
+  for uri in $DCS; do
+    vlog "binding to $uri as $BIND_ID"
+    LDAPTLS_CACERT="$CA_FILE" ldapwhoami -x -H "$uri" -D "$BIND_ID" \
+      -y "$PASS_TMP" >/dev/null 2>&1 || { vlog "  bind failed"; continue; }
+
+    # ldif-wrap=no keeps a long DN on one line; dn:: means base64.
+    line="$(LDAPTLS_CACERT="$CA_FILE" ldapsearch -LLL -o ldif-wrap=no -x \
+        -H "$uri" -D "$BIND_ID" -y "$PASS_TMP" -b "$BASE_DN" \
+        "(|(userPrincipalName=$BIND_ID)(sAMAccountName=$ACCT))" dn 2>/dev/null \
+      | sed -n '/^dn:/{p;q;}')"
+
+    case "$line" in
+      "dn:: "*) BIND_DN="$(printf '%s' "${line#dn:: }" | base64 -d 2>/dev/null)" ;;
+      "dn: "*)  BIND_DN="${line#dn: }" ;;
+    esac
+
+    BOUND=1
+
+    # Now that we can query the directory, complete the trust chain.
+    if [ -r "$CA_FILE" ]; then
+      before="$(grep -c 'BEGIN CERTIFICATE' "$CA_FILE" 2>/dev/null || echo 0)"
+      if { cat "$CA_FILE"; fetch_published_cas "$uri"; } | dedupe_certs > "$CA_FILE.new" \
+         && [ -s "$CA_FILE.new" ]; then
+        mv "$CA_FILE.new" "$CA_FILE"
+        chmod 644 "$CA_FILE"
+        after="$(grep -c 'BEGIN CERTIFICATE' "$CA_FILE")"
+        vlog "trust chain: $before -> $after certificate(s)"
+      else
+        rm -f "$CA_FILE.new"
+      fi
+    fi
+
+    if [ -n "$BIND_DN" ]; then
+      log "bound to $(host_of "$uri") as $BIND_ID"
+      vlog "resolved DN: $BIND_DN"
+    else
+      log "bound to $(host_of "$uri") as $BIND_ID, but no DN found for $ACCT"
+    fi
+    break
+  done
+
+  [ "$BOUND" -eq 1 ] || log "WARNING: no DC accepted $BIND_ID; writing rc without BINDDN"
+
+  # Offer to persist a password that was typed, but only once it is known good.
+  if [ "$PROMPTED" -eq 1 ] && [ "$BOUND" -eq 1 ] && [ -t 0 ]; then
+    printf 'Save this password to %s? [y/N] ' "$PASS_FILE" >&2
+    read -r ans
+    case "$ans" in
+      [Yy]*)
+        if cp "$PASS_TMP" "$PASS_FILE"; then
+          chmod 600 "$PASS_FILE"
+          if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+            chown "$TARGET_USER:" "$PASS_FILE" 2>/dev/null
+          fi
+          log "saved $PASS_FILE (mode 600)"
+        else
+          log "WARNING: could not write $PASS_FILE"
+        fi
+        ;;
+      *) vlog "password not saved" ;;
+    esac
+  fi
+fi
+
+# ---- write rc file ---------------------------------------------------------
+# URI takes a space-separated list on ONE line; clients fail over left to right.
+# BINDDN is a user-only option, valid here but never in a system ldap.conf.
+{
+  echo "# Generated by ldaps-init on $(date)"
+  echo "# Domain: ${AD_DOMAIN:-unknown}   Realm: ${REALM:-unknown}"
+  echo
+  echo "URI $DCS"
+  echo "BASE $BASE_DN"
+  [ -n "$BIND_DN" ] && echo "BINDDN $BIND_DN"
+  echo "TLS_CACERT $CA_FILE"
+  echo "TLS_REQCERT demand"
+  echo "TLS_PROTOCOL_MIN 3.3"
+} > "$RC"
+chmod 600 "$RC"
+
+# Files were created as root under sudo; hand them to the user they belong to.
+if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+  chown "$TARGET_USER:" "$RC" 2>/dev/null
+  [ -r "$CA_FILE" ] && chown "$TARGET_USER:" "$CA_FILE" 2>/dev/null
+  vlog "chowned $RC and $CA_FILE to $TARGET_USER"
+fi
+
+log "wrote $RC"
+log "  DCs:     $DCS"
+log "  BASE DN: $BASE_DN"
+log "  BINDDN:  ${BIND_DN:-<none>}"
+log "  CA cert: $CA_FILE"
+
+[ -n "$BIND_DN" ] && log "" && log "Try: ldapsearch -x -y $PASS_FILE '(sAMAccountName=$TARGET_USER)'"
+exit 0

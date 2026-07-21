@@ -1,3 +1,4 @@
+import fs from 'fs';
 import ldap, { Client, SearchOptions, SearchEntry, Change } from 'ldapjs';
 import { LdapConfig, LdapUser, LdapGroup } from '../types/ldap';
 
@@ -31,11 +32,20 @@ export class LdapClient {
         return;
       }
 
+      // An ldaps:// URL against an internal CA needs that CA supplied
+      // explicitly: the issuing root is virtually never in the system trust
+      // store, and AD typically presents leaf + intermediate without it.
+      // rejectUnauthorized stays at its secure default.
+      const tlsOptions = this.config.url.startsWith('ldaps://') && this.config.tlsCaCert
+        ? { ca: [fs.readFileSync(this.config.tlsCaCert)] }
+        : undefined;
+
       this.client = ldap.createClient({
         url: this.config.url,
         reconnect: true,
-        timeout: 5000,
+        timeout: this.config.timeoutMs ?? 30000,
         connectTimeout: 10000,
+        tlsOptions,
       });
 
       this.client.on('error', (err) => {
@@ -90,26 +100,35 @@ export class LdapClient {
   async search<T>(baseDN: string, options: SearchOptions): Promise<T[]> {
     this.ensureConnected();
 
+    // Active Directory refuses to return more than MaxPageSize entries (1000 by
+    // default) and answers with SizeLimitExceeded rather than truncating, so a
+    // plain sizeLimit search fails outright on any large container. Page through
+    // instead and stop collecting once the caller's limit is met.
+    const { sizeLimit, ...rest } = options;
+    const max = sizeLimit && sizeLimit > 0 ? sizeLimit : Infinity;
+
     return new Promise((resolve, reject) => {
       const entries: T[] = [];
 
-      this.client!.search(baseDN, options, (err, res) => {
+      this.client!.search(baseDN, { ...rest, paged: { pageSize: 1000 } }, (err, res) => {
         if (err) {
           reject(err);
           return;
         }
 
         res.on('searchEntry', (entry: SearchEntry) => {
-          const obj = this.entryToObject<T>(entry);
-          entries.push(obj);
+          if (entries.length < max) entries.push(this.entryToObject<T>(entry));
         });
 
-        res.on('error', (err) => {
-          reject(err);
+        res.on('error', (err: Error) => {
+          // A server that enforces its own limit has still given us usable
+          // results; returning them beats failing the whole request.
+          if (err.name === 'SizeLimitExceededError') resolve(entries.slice(0, max));
+          else reject(err);
         });
 
         res.on('end', () => {
-          resolve(entries);
+          resolve(entries.slice(0, max));
         });
       });
     });
@@ -196,17 +215,33 @@ export class LdapClient {
     }
   }
 
+  // The attribute holding the login name. RFC2307 directories use uid; Active
+  // Directory has no uid attribute at all and uses sAMAccountName.
+  get loginAttr(): string {
+    return this.config.loginAttr || 'uid';
+  }
+
   // Convenience method for searching users
-  async searchUsers(baseDN: string, filter: string, limit = 50): Promise<LdapUser[]> {
-    return this.search<LdapUser>(baseDN, {
-      scope: 'sub',
+  async searchUsers(baseDN: string, filter: string, limit = 50, scope: 'sub' | 'base' = 'sub'): Promise<LdapUser[]> {
+    const attributes = [
+      'dn', 'uid', 'cn', 'sn', 'givenName', 'mail',
+      'uidNumber', 'gidNumber', 'homeDirectory', 'loginShell', 'gecos'
+    ];
+    if (!attributes.includes(this.loginAttr)) attributes.push(this.loginAttr);
+
+    const results = await this.search<LdapUser & Record<string, unknown>>(baseDN, {
+      scope,
       filter,
-      attributes: [
-        'dn', 'uid', 'cn', 'sn', 'givenName', 'mail',
-        'uidNumber', 'gidNumber', 'homeDirectory', 'loginShell', 'gecos'
-      ],
+      attributes,
       sizeLimit: limit,
     });
+
+    // Surface the configured login attribute as `uid` so the rest of the app
+    // stays schema-agnostic.
+    return results.map((u) => ({
+      ...u,
+      uid: u.uid ?? (u[this.loginAttr] as string | undefined) ?? '',
+    }));
   }
 
   // Convenience method for searching groups
@@ -230,7 +265,9 @@ export class LdapClient {
 
   // Get a single user by UID
   async getUserByUid(baseDN: string, uid: string): Promise<LdapUser | null> {
-    const results = await this.searchUsers(baseDN, `(uid=${this.escapeFilter(uid)})`, 1);
+    const results = await this.searchUsers(
+      baseDN, `(${this.loginAttr}=${this.escapeFilter(uid)})`, 1
+    );
     return results.length > 0 ? results[0] : null;
   }
 
