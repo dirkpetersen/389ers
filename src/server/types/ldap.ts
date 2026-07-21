@@ -138,6 +138,12 @@ export interface AdConfig {
   // constraint violation.
   writeGidNumber?: boolean;
 
+  // Extra constraint ANDed into every group lookup, as a complete
+  // parenthesised filter. `(gidNumber=*)` restricts the app to POSIX-enabled
+  // groups, hiding the mail-enabled and security-only groups that make up most
+  // of a typical AD but mean nothing to a Unix system.
+  groupFilter?: string;
+
   safety?: {
     // Master switch. Left false, every mutating route returns 501 — the same
     // guard the NSS backend uses. Turn on deliberately.

@@ -143,6 +143,7 @@ function buildConfig(fromYaml: Partial<AppConfig>, yamlSource: string | null): L
       loginAttribute: str('AD_LOGIN_ATTRIBUTE') ?? y.ad?.loginAttribute,
       groupType: int('AD_GROUP_TYPE') ?? y.ad?.groupType,
       writeGidNumber: bool('AD_WRITE_GID_NUMBER') ?? y.ad?.writeGidNumber,
+      groupFilter: str('AD_GROUP_FILTER') ?? y.ad?.groupFilter,
       safety: {
         // Defaults live in AdBackend (writes off, TLS required); passing
         // undefined through preserves them rather than overriding with false.

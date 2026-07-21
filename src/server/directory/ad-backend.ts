@@ -33,6 +33,25 @@ export class AdBackend implements DirectoryBackend {
   constructor(private client: LdapClient, private config: AppConfig) {
     this.ad = config.ad || {};
     this.loginAttr = this.ad.loginAttribute || 'sAMAccountName';
+
+    // groupFilter is concatenated into a filter string, so a malformed value
+    // would fail every group query with an opaque LDAP parse error. Reject it
+    // here, where the message can name the setting.
+    const gf = this.ad.groupFilter;
+    if (gf !== undefined) {
+      let depth = 0;
+      for (const ch of gf) {
+        if (ch === '(') depth++;
+        else if (ch === ')') depth--;
+        if (depth < 0) break;
+      }
+      if (!gf.startsWith('(') || !gf.endsWith(')') || depth !== 0) {
+        throw new Error(
+          `ad.groupFilter (AD_GROUP_FILTER) must be a complete parenthesised ` +
+          `LDAP filter such as '(gidNumber=*)', got: ${gf}`
+        );
+      }
+    }
   }
 
   // Writes are opt-in. Until safety.writeEnabled is set, the routes' existing
@@ -108,11 +127,19 @@ export class AdBackend implements DirectoryBackend {
     return rows.length ? this.toUser(rows[0]) : null;
   }
 
+  // Constraints every group must satisfy. ad.groupFilter is appended verbatim,
+  // so it must be a complete, parenthesised filter — e.g. (gidNumber=*) to
+  // surface only POSIX-enabled groups. Applied to getGroup as well as search,
+  // otherwise an excluded group is still reachable by exact name.
+  private groupFilter(extra = ''): string {
+    return `(&(objectClass=group)${this.ad.groupFilter ?? ''}${extra})`;
+  }
+
   async searchGroups(query: string, limit: number): Promise<LdapGroup[]> {
-    let filter = '(objectClass=group)';
+    let filter = this.groupFilter();
     if (query) {
       const q = this.client.escapeFilter(query);
-      filter = `(&(objectClass=group)(|(cn=*${q}*)(${this.loginAttr}=*${q}*)(description=*${q}*)))`;
+      filter = this.groupFilter(`(|(cn=*${q}*)(${this.loginAttr}=*${q}*)(description=*${q}*))`);
     }
     const rows = await this.client.search<Record<string, unknown>>(this.config.groups.baseDN, {
       scope: 'sub',
@@ -127,7 +154,7 @@ export class AdBackend implements DirectoryBackend {
     const q = this.client.escapeFilter(name);
     const rows = await this.client.search<Record<string, unknown>>(this.config.groups.baseDN, {
       scope: 'sub',
-      filter: `(&(objectClass=group)(|(cn=${q})(${this.loginAttr}=${q})))`,
+      filter: this.groupFilter(`(|(cn=${q})(${this.loginAttr}=${q}))`),
       attributes: ['dn', 'cn', this.loginAttr, 'description', 'member', 'managedBy', 'gidNumber'],
       sizeLimit: 1,
     });
