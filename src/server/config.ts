@@ -22,6 +22,23 @@ const int = (key: string): number | undefined => {
   return Number.isFinite(n) ? n : undefined;
 };
 
+// Undefined rather than false when unset, so an absent variable leaves the
+// consumer's own default in place instead of silently overriding it with false.
+const bool = (key: string): boolean | undefined => {
+  const v = str(key);
+  if (v === undefined) return undefined;
+  return /^(1|true|yes|on)$/i.test(v);
+};
+
+// Comma-separated. DNs contain commas, so allow ';' as an alternative separator
+// and use it when any entry looks like a DN.
+const list = (key: string): string[] | undefined => {
+  const v = str(key);
+  if (v === undefined) return undefined;
+  const sep = v.includes(';') ? ';' : ',';
+  return v.split(sep).map((s) => s.trim()).filter(Boolean);
+};
+
 // Secrets belong in files rather than the environment where possible: env vars
 // are visible in /proc/<pid>/environ, leak into crash dumps and child
 // processes, and are often echoed by process listings and logging.
@@ -45,7 +62,20 @@ export interface LoadedConfig {
   yamlSource: string | null;
 }
 
-export function loadConfig(configDir: string): LoadedConfig {
+export function loadConfig(configDir: string, repoRoot = path.join(configDir, '..')): LoadedConfig {
+  // CONFIG_FILE selects an alternate config (absolute, or relative to the repo
+  // root) so LDAP, AD, and NSS deployments can keep separate files. An explicit
+  // choice is not silently ignored: a missing CONFIG_FILE is an error, unlike
+  // the default config.yaml which is allowed to be absent under env-first use.
+  const explicit = str('CONFIG_FILE');
+  if (explicit) {
+    const p = path.resolve(repoRoot, explicit);
+    if (!fs.existsSync(p)) {
+      throw new Error(`CONFIG_FILE is set to '${explicit}' but ${p} does not exist`);
+    }
+    return buildConfig(yaml.parse(fs.readFileSync(p, 'utf8')) ?? {}, p);
+  }
+
   const configPath = path.join(configDir, 'config.yaml');
   const examplePath = path.join(configDir, 'config.yaml.example');
 
@@ -61,6 +91,11 @@ export function loadConfig(configDir: string): LoadedConfig {
     }
   }
 
+  return buildConfig(fromYaml, yamlSource);
+}
+
+/** Overlay environment variables onto whatever the YAML supplied. */
+function buildConfig(fromYaml: Partial<AppConfig>, yamlSource: string | null): LoadedConfig {
   const y = fromYaml as AppConfig;
   const baseDN = str('LDAP_BASE_DN') ?? y.ldap?.baseDN ?? '';
 
@@ -101,6 +136,21 @@ export function loadConfig(configDir: string): LoadedConfig {
     admin: {
       username: str('ADMIN_USERNAME') ?? y.admin?.username ?? 'admin',
       password: secret('ADMIN_PASSWORD') ?? y.admin?.password ?? '',
+    },
+    // AdBackend reads this; every field is optional and it supplies its own
+    // safe defaults, so the section is only built when something sets a value.
+    ad: {
+      loginAttribute: str('AD_LOGIN_ATTRIBUTE') ?? y.ad?.loginAttribute,
+      groupType: int('AD_GROUP_TYPE') ?? y.ad?.groupType,
+      writeGidNumber: bool('AD_WRITE_GID_NUMBER') ?? y.ad?.writeGidNumber,
+      safety: {
+        // Defaults live in AdBackend (writes off, TLS required); passing
+        // undefined through preserves them rather than overriding with false.
+        writeEnabled: bool('AD_WRITE_ENABLED') ?? y.ad?.safety?.writeEnabled,
+        allowedOus: list('AD_ALLOWED_OUS') ?? y.ad?.safety?.allowedOus,
+        protectedNames: list('AD_PROTECTED_NAMES') ?? y.ad?.safety?.protectedNames,
+        requireTls: bool('AD_REQUIRE_TLS') ?? y.ad?.safety?.requireTls,
+      },
     },
   };
 

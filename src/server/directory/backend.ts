@@ -7,7 +7,7 @@ import { LdapUser, LdapGroup } from '../types/ldap';
 //          configured for in nsswitch.conf: local files, or SSSD against
 //          Active Directory. NSS is read-only by design.
 export interface DirectoryBackend {
-  readonly kind: 'ldap' | 'nss';
+  readonly kind: 'ldap' | 'ad' | 'nss';
 
   // False when the backend cannot create/modify/delete groups. Routes must
   // reject write attempts with 501 rather than failing deeper in the stack.
@@ -41,10 +41,76 @@ export interface DirectoryBackend {
 
 export class ReadOnlyBackendError extends Error {
   constructor(backendKind: string) {
-    super(
-      `The '${backendKind}' directory backend is read-only. ` +
-      `Group management requires a writable backend (set DIRECTORY_BACKEND=ldap).`
-    );
+    // The remedy differs per backend, and pointing someone at the wrong one
+    // wastes real time when the directory is remote.
+    const remedy = backendKind.startsWith('ad')
+      ? 'Set ad.safety.writeEnabled: true in the config to allow writes, ' +
+        'after confirming ad.safety.allowedOus is scoped correctly.'
+      : backendKind === 'nss'
+        ? 'getent(1) cannot write to a directory. Use DIRECTORY_BACKEND=ldap or ' +
+          'DIRECTORY_BACKEND=ad to manage groups.'
+        : 'Group management requires a writable backend.';
+    super(`The '${backendKind}' directory backend is read-only. ${remedy}`);
     this.name = 'ReadOnlyBackendError';
   }
+}
+
+// Map a backend error to an HTTP response. Safety refusals and LDAP server
+// rejections carry information the caller needs — without this they collapse
+// into an opaque 500 and are painful to diagnose against a remote directory.
+export function backendErrorResponse(
+  err: unknown
+): { status: number; body: Record<string, unknown> } | null {
+  if (!(err instanceof Error)) return null;
+
+  if (err.name === 'ReadOnlyBackendError') {
+    return { status: 501, body: { error: 'Read-only directory backend', detail: err.message } };
+  }
+
+  if (err.name === 'AdWriteBlockedError') {
+    return { status: 403, body: { error: 'Blocked by directory safety policy', detail: err.message } };
+  }
+
+  // The directory being unreachable is by far the most common failure when
+  // pointing this at a new server, and "Failed to create group" gives no clue.
+  const sysCode = (err as { code?: unknown }).code;
+  if (
+    /not connected/i.test(err.message) ||
+    sysCode === 'ECONNREFUSED' || sysCode === 'ETIMEDOUT' ||
+    sysCode === 'ENOTFOUND' || sysCode === 'EHOSTUNREACH'
+  ) {
+    return {
+      status: 503,
+      body: {
+        error: 'Directory server unreachable',
+        detail: err.message,
+        hint: 'Check the ldap.url host/port, that the DC is listening, and that no firewall blocks 389/636.',
+      },
+    };
+  }
+
+  // ldapjs surfaces the server's own rejection, which is far more useful than
+  // "failed to create group" — e.g. insufficient access, constraint violation
+  // from a missing schema attribute, or a DC refusing an unsigned bind.
+  const ldapCode = (err as { code?: number }).code;
+  if (typeof ldapCode === 'number') {
+    const status = ldapCode === 50 || ldapCode === 8 ? 403 : 502;
+    return {
+      status,
+      body: {
+        error: 'Directory server rejected the operation',
+        detail: err.message,
+        ldapCode,
+        hint: ldapCode === 8
+          ? 'Server requires a stronger authentication method — typically LDAP signing or TLS. Try ldaps://.'
+          : ldapCode === 50
+            ? 'The bind account lacks permission to write here.'
+            : ldapCode === 65
+              ? 'Object class violation: the directory schema does not accept these attributes (e.g. gidNumber without RFC2307/IDMU).'
+              : undefined,
+      },
+    };
+  }
+
+  return null;
 }

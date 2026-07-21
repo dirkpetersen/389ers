@@ -56,7 +56,30 @@ The app resolves users and groups through a `DirectoryBackend` (`src/server/dire
 | Backend | Value | Source | Writable |
 |---------|-------|--------|----------|
 | LDAP | `ldap` (default) | Service-account bind to 389 DS / OpenLDAP | Yes |
+| AD | `ad` | Service-account bind to Active Directory | Yes, but gated — see below |
 | NSS | `nss` | `getent(1)`, following `nsswitch.conf` — local files and/or SSSD against Active Directory | **No** |
+
+`CONFIG_FILE` selects which config file to load (absolute, or relative to the repo root), so each deployment keeps its own — e.g. `CONFIG_FILE=config/config.ad.yaml DIRECTORY_BACKEND=ad`.
+
+### `AdBackend` (`src/server/directory/ad-backend.ts`)
+
+AD is not schema-compatible with 389 DS, which is why this is a separate class rather than a config layer over `LdapBackend`:
+
+- Login attribute is `sAMAccountName`, not `uid`.
+- A user's RDN is their display name (`CN=Jane Smith`), so **a member DN cannot be parsed to recover the login** — the `/^uid=([^,]+),/` trick used on the 389 DS path is invalid here. `resolveMember` does a base-scope DN lookup instead.
+- Groups are `objectClass=group` with DN-based `member`. There is no `posixGroup`/`memberUid` unless RFC2307/IDMU has extended the schema.
+- Creating a group requires `sAMAccountName` and `groupType` (default `-2147483646`, global security).
+- `managedBy` is single-valued in AD, unlike the multi-valued treatment the 389 DS path assumes.
+
+`ad.writeGidNumber` defaults to false; enabling it on a stock AD causes an object class violation (LDAP error 65) because `gidNumber` is not in the schema.
+
+### AD write safety
+
+Writes are opt-in and checked before anything reaches the network, in `AdBackend.assertWritable`. `ad.safety.writeEnabled` defaults to false, so `backend.writable` is false and the routes' existing 501 guard blocks every mutation. Beyond that: `allowedOus` (empty refuses all writes), `protectedNames`, and `requireTls` (refuses cleartext writes).
+
+Note that plain `ldap://` writes are commonly rejected by the DC itself with LDAP error 8 when *LDAP server signing requirements* is set to *Require signing*. That is server policy; no app-side setting bypasses it.
+
+`backendErrorResponse` in `directory/backend.ts` maps backend failures to useful HTTP responses — unreachable directory to 503, safety refusals to 403, and LDAP result codes to 403/502 with a hint. Without it these all collapse into an opaque 500, which is painful to diagnose against a remote directory. Route handlers call it before falling through to their generic 500.
 
 `NssBackend` shells out to `getent passwd` / `getent group` via `execFile` (no shell, names validated against a strict charset). Because it goes through NSS, the same code reads local `/etc/passwd` on a dev box and Active Directory on an SSSD-joined host — no LDAP credentials, no service account, inheriting the host's existing Kerberos/SSSD authentication.
 

@@ -120,6 +120,45 @@ export interface UsersConfig {
   baseDN: string;
 }
 
+// Active Directory specifics. Only read when DIRECTORY_BACKEND=ad.
+export interface AdConfig {
+  // Login attribute. sAMAccountName is the pre-Windows-2000 account name and
+  // is what users actually type; AD has no `uid` unless RFC2307/IDMU is set up.
+  loginAttribute?: string;
+
+  // groupType bitmask for newly created groups. Defaults to a global security
+  // group. Common values:
+  //   -2147483646  global security
+  //   -2147483644  domain local security
+  //   -2147483640  universal security
+  groupType?: number;
+
+  // Write POSIX gidNumber on new groups. Requires the RFC2307/IDMU schema
+  // extension; leave false on a stock AD or group creation will fail with a
+  // constraint violation.
+  writeGidNumber?: boolean;
+
+  safety?: {
+    // Master switch. Left false, every mutating route returns 501 — the same
+    // guard the NSS backend uses. Turn on deliberately.
+    writeEnabled?: boolean;
+
+    // Writes are refused unless the target DN sits under one of these
+    // subtrees. Prevents a bug or a bad request from touching, say,
+    // CN=Domain Admins.
+    allowedOus?: string[];
+
+    // Group names that may never be modified or deleted, matched case
+    // insensitively against cn and sAMAccountName.
+    protectedNames?: string[];
+
+    // Refuse to bind over a non-TLS connection. Plain ldap:// sends the bind
+    // password in cleartext, so this defaults to on and must be switched off
+    // knowingly.
+    requireTls?: boolean;
+  };
+}
+
 export interface AppConfig {
   server: {
     port: number;
@@ -136,4 +175,5 @@ export interface AppConfig {
     username: string;
     password: string;
   };
+  ad?: AdConfig;
 }

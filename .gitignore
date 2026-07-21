@@ -14,6 +14,9 @@
 *.local
 config/config.yaml
 .ldappass
+config/config.ad.yaml
+config/config.*.yaml
+!config/*.yaml.example
 
 # Logs
 *.log

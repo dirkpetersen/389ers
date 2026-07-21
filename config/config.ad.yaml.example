@@ -1,0 +1,106 @@
+# RCO Group Manager — Active Directory over PLAIN LDAP (no TLS)
+#
+# Use with:
+#   CONFIG_FILE=config/config.ad.yaml DIRECTORY_BACKEND=ad npm start
+#
+# Copy to config/config.ad.yaml and fill in your values. That filename is
+# gitignored; this .example file is not, so keep real credentials out of it.
+#
+# ---------------------------------------------------------------------------
+# READ THIS BEFORE ENABLING WRITES OVER PLAIN LDAP
+#
+# ldap:// sends the bind password across the network in cleartext, and every
+# group change with it. Anyone who can sniff the segment between this app and
+# the domain controller can read both.
+#
+# Separately, your DC may simply refuse to cooperate. If the policy
+# "Domain controller: LDAP server signing requirements" is set to
+# "Require signing" — the recommended hardening since Microsoft ADV190023, and
+# the default in many environments — a cleartext simple bind is rejected with
+# LDAP error 8 (strongerAuthRequired). No application-side setting can work
+# around that; the fix is ldaps:// on port 636.
+#
+# Plain LDAP is reasonable for a lab DC or an isolated segment. For anything
+# holding real accounts, switch the url to ldaps:// and set
+# ad.safety.requireTls back to true.
+# ---------------------------------------------------------------------------
+
+server:
+  port: 8088
+  sessionSecret: "change-me-in-production"
+  sessionTimeout: 3600000  # 1 hour
+
+ldap:
+  # Plain LDAP, port 389. Change to ldaps://<dc>:636 to encrypt.
+  url: "ldap://dc01.example.edu:389"
+
+  baseDN: "dc=example,dc=edu"
+
+  # Service account used for all reads and writes. A UPN
+  # (svc-groupmgr@example.edu) also works and is often easier than a full DN.
+  bindDN: "CN=svc-groupmgr,OU=Service Accounts,DC=example,DC=edu"
+  bindPassword: "CHANGE-ME"
+
+groups:
+  # Where groups are read from and created. Keep this as narrow as possible.
+  baseDN: "OU=rco,DC=example,DC=edu"
+
+  # Only consulted when ad.writeGidNumber is true.
+  gidMin: 300000
+  gidMax: 400000
+
+  # Members of this group may manage every group in the app.
+  adminGroup: "CN=389ers-admins,OU=rco,DC=example,DC=edu"
+
+users:
+  # Narrow this to the OU holding real accounts; searching from the domain
+  # root pulls in computer and service objects and triggers referrals.
+  baseDN: "OU=Accounts,DC=example,DC=edu"
+
+audit:
+  logFile: "./permissions-changes.log"
+
+admin:
+  username: "admin"
+  password: "changeme"
+
+ad:
+  # Login attribute. sAMAccountName is what users actually type. AD has no
+  # `uid` unless the RFC2307/IDMU schema extension is installed.
+  loginAttribute: "sAMAccountName"
+
+  # groupType for newly created groups:
+  #   -2147483646  global security   (default)
+  #   -2147483644  domain local security
+  #   -2147483640  universal security
+  groupType: -2147483646
+
+  # Write a POSIX gidNumber on new groups. Requires RFC2307/IDMU. On a stock
+  # AD this causes an object class violation (LDAP error 65), so leave it
+  # false unless you know the schema is extended.
+  writeGidNumber: false
+
+  safety:
+    # Master switch. While false, every mutating endpoint returns 501 and
+    # nothing in the directory can be changed. Set true only when you have
+    # confirmed allowedOus below is correct.
+    writeEnabled: false
+
+    # Writes are refused unless the target DN sits under one of these
+    # subtrees. An empty list refuses all writes. This is what stops a bad
+    # request from reaching CN=Domain Admins.
+    allowedOus:
+      - "OU=rco,DC=example,DC=edu"
+
+    # Never modified or deleted, whatever the request says.
+    protectedNames:
+      - "Domain Admins"
+      - "Enterprise Admins"
+      - "Schema Admins"
+      - "389ers-admins"
+
+    # Refuse to write over a non-TLS connection. You are on plain ldap://, so
+    # this must be false for writes to be attempted at all. Setting it false
+    # is the deliberate acknowledgement that credentials and changes travel
+    # in the clear.
+    requireTls: false

@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { DirectoryBackend } from '../directory/backend';
+import { DirectoryBackend , backendErrorResponse } from '../directory/backend';
 import { LdapUser, SearchResult } from '../types/ldap';
 import { requireAuth } from '../middleware/auth';
 
@@ -36,6 +36,8 @@ export function createUserRoutes(backend: DirectoryBackend): Router {
       res.json(result);
     } catch (err) {
       console.error('User search error:', err);
+      const mapped = backendErrorResponse(err);
+      if (mapped) return res.status(mapped.status).json(mapped.body);
       res.status(500).json({ error: 'Failed to search users' });
     }
   });
@@ -51,6 +53,8 @@ export function createUserRoutes(backend: DirectoryBackend): Router {
       res.json(user);
     } catch (err) {
       console.error('Get user error:', err);
+      const mapped = backendErrorResponse(err);
+      if (mapped) return res.status(mapped.status).json(mapped.body);
       res.status(500).json({ error: 'Failed to get user' });
     }
   });

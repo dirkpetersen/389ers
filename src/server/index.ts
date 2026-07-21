@@ -13,6 +13,7 @@ import { loadConfig, ldapBackendProblems, productionWarnings } from './config';
 import { DirectoryBackend } from './directory/backend';
 import { NssBackend } from './directory/nss';
 import { LdapBackend } from './directory/ldap-backend';
+import { AdBackend } from './directory/ad-backend';
 
 import { createUserRoutes } from './routes/users';
 import { createGroupRoutes } from './routes/groups';
@@ -23,12 +24,18 @@ const app = express();
 
 // Configuration is env-first (see config.ts): every setting has an environment
 // variable and config.yaml is optional, because PaaS deployments run from a git
-// checkout where a gitignored YAML file cannot travel with the code.
+// checkout where a gitignored YAML file cannot travel with the code. CONFIG_FILE
+// still selects an alternate YAML when one is preferred, so LDAP, AD, and NSS
+// deployments can keep separate files.
 const { config, yamlSource } = loadConfig(path.join(__dirname, '../../config'));
 
 // DIRECTORY_BACKEND=nss  -> resolve users/groups via getent(1), which follows
 //                           nsswitch.conf (local files, or SSSD against AD).
+//                           Read-only.
 // DIRECTORY_BACKEND=ldap -> bind to 389 DS / OpenLDAP with a service account.
+// DIRECTORY_BACKEND=ad   -> bind to Active Directory. Same transport as ldap,
+//                           but AD schema: sAMAccountName logins, DN-based
+//                           membership, objectClass=group with groupType.
 const backendKind = (process.env.DIRECTORY_BACKEND || 'ldap').toLowerCase();
 
 // AUTH_MODE=local trusts the OS identity of the process owner instead of
@@ -63,21 +70,23 @@ if (backendKind === 'nss') {
     groupPrefix: process.env.NSS_GROUP_PREFIX || '',
   });
 } else {
-  // The LDAP backend needs a reachable directory and real credentials. Report
-  // everything that is missing at once rather than one failure per restart.
+  // Both LDAP-family backends need a reachable directory and real credentials.
+  // Report everything that is missing at once rather than one failure per restart.
   const problems = ldapBackendProblems(config);
   if (problems.length) {
     console.error(
-      `DIRECTORY_BACKEND=ldap is not configured:\n` +
+      `DIRECTORY_BACKEND=${backendKind} is not configured:\n` +
       problems.map((p) => `  - ${p}`).join('\n') +
-      `\n\nSet these as environment variables, or create config/config.yaml` +
+      `\n\nSet these as environment variables, or create a config file` +
       (yamlSource ? ` (currently reading ${yamlSource})` : '') +
       `.\nAlternatively run the read-only NSS backend with DIRECTORY_BACKEND=nss.`
     );
     process.exit(1);
   }
   ldapClient = LdapClient.getInstance(config.ldap);
-  backend = new LdapBackend(ldapClient, config);
+  backend = backendKind === 'ad'
+    ? new AdBackend(ldapClient, config)
+    : new LdapBackend(ldapClient, config);
 }
 
 const authService = new AuthorizationService(backend, config);
