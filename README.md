@@ -2,6 +2,8 @@
 
 Web-based frontend for managing Unix POSIX groups on 389 Directory Server for HPC systems at My lovely University.
 
+<img width="1251" height="838" alt="RCO Group Manager screenshot" src="https://github.com/user-attachments/assets/9e3c63c4-6718-4658-8308-c76ae85f5871" />
+
 ## Quick Start
 
 ### Prerequisites
