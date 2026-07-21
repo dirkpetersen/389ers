@@ -99,6 +99,8 @@ Express API (port 8088)
         |
         +-- DIRECTORY_BACKEND=ldap --> 389 DS / OpenLDAP (port 10389)   [read-write]
         |
+        +-- DIRECTORY_BACKEND=ad   --> Active Directory (LDAP/LDAPS)     [read-write, gated]
+        |
         +-- DIRECTORY_BACKEND=nss  --> getent(1) -> nsswitch.conf        [read-only]
                                           |
                                           +-- local files
@@ -108,12 +110,73 @@ Express API (port 8088)
 ## Directory Backends
 
 The API resolves users and groups through a pluggable backend, selected with the
-`DIRECTORY_BACKEND` environment variable.
+`DIRECTORY_BACKEND` environment variable. `CONFIG_FILE` selects which config
+file to load, so each deployment can keep its own.
 
 ### `ldap` (default) — 389 DS / OpenLDAP
 
 Binds with a service account from `config/config.yaml`. Full read-write: create,
 rename, and delete groups, and add or remove members.
+
+### `ad` — Active Directory over LDAP (read-write)
+
+Binds to a domain controller directly. Use this when you need to **create and
+modify groups** in AD — the `nss` backend below can only read.
+
+```bash
+cp config/config.ad.yaml.example config/config.ad.yaml   # then edit it
+CONFIG_FILE=config/config.ad.yaml DIRECTORY_BACKEND=ad npm start
+```
+
+AD is not schema-compatible with 389 DS, so this is a separate backend rather
+than a config switch:
+
+| | 389 DS / OpenLDAP | Active Directory |
+|---|---|---|
+| Login attribute | `uid` | `sAMAccountName` |
+| Group class | `posixGroup` | `group` |
+| Membership | `memberUid` (login names) | `member` (DNs) |
+| User RDN | `uid=jsmith` | `CN=Jane Smith` — login not derivable from the DN |
+| Required on create | `cn`, `gidNumber` | `cn`, `sAMAccountName`, `groupType` |
+| `managedBy` | multi-valued | single-valued |
+
+#### Plain LDAP vs LDAPS
+
+The example config ships with plain `ldap://`. Two consequences:
+
+1. **The bind password and every group change cross the network in cleartext.**
+2. **Your DC may refuse writes outright.** If the policy *Domain controller:
+   LDAP server signing requirements* is set to *Require signing* — the
+   recommended hardening since Microsoft ADV190023, and the default in many
+   environments — a cleartext simple bind is rejected with LDAP error 8
+   (`strongerAuthRequired`). No application setting works around that; the fix
+   is `ldaps://` on port 636.
+
+Plain LDAP is reasonable against a lab DC or an isolated segment. For real
+accounts, use `ldaps://` and set `ad.safety.requireTls: true`.
+
+#### Write safety
+
+Writing to AD has a far larger blast radius than writing to a lab 389 DS, so
+writes are gated. Under `ad.safety`:
+
+| Key | Default | Effect |
+|-----|---------|--------|
+| `writeEnabled` | `false` | While false every mutating endpoint returns 501 |
+| `allowedOus` | *(empty)* | Writes refused unless the target DN is under one of these subtrees; empty refuses everything |
+| `protectedNames` | — | Names that can never be modified or deleted |
+| `requireTls` | `true` | Refuses to write over a non-TLS connection |
+
+Every guard is checked before the request reaches the network. Directory
+rejections are surfaced with the LDAP result code and a hint rather than a bare
+500 — error 8 points at signing/TLS, 50 at bind-account permissions, 65 at a
+schema mismatch (typically `writeGidNumber: true` on an AD without RFC2307/IDMU).
+
+#### POSIX attributes
+
+Stock AD has no `gidNumber`. `ad.writeGidNumber` defaults to `false`; turning it
+on without the RFC2307/IDMU schema extension makes group creation fail with an
+object class violation.
 
 ### `nss` — Active Directory via SSSD
 
@@ -259,12 +322,12 @@ cp config/config.yaml.example config/config.yaml   # then fill in your LDAP sett
 
 ## Features
 
-- Pluggable directory backends: 389 DS / OpenLDAP (read-write) or Active
-  Directory via SSSD (read-only)
+- Pluggable directory backends: 389 DS / OpenLDAP, Active Directory over LDAP
+  (both read-write), or Active Directory via SSSD (read-only)
 - Login/logout with session management, or passwordless local-OS-identity mode
 - Group listing with search
-- Create/edit/delete groups *(LDAP backend only)*
-- Member management *(LDAP backend only)*
+- Create/edit/delete groups *(LDAP and AD backends)*
+- Member management *(LDAP and AD backends)*
 - User search with debounce
 - Bulk member operations
 - Nested group resolution with breadcrumb paths

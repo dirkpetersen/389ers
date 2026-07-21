@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { DirectoryBackend, ReadOnlyBackendError } from '../directory/backend';
+import { DirectoryBackend, ReadOnlyBackendError, backendErrorResponse } from '../directory/backend';
 import { AuthorizationService } from '../auth/authorization';
 import { AppConfig, CreateGroupRequest, UpdateGroupRequest } from '../types/ldap';
 import { requireAuth, getLogin, isAdmin } from '../middleware/auth';
@@ -47,6 +47,8 @@ export function createGroupRoutes(
       res.json({ groups: result, backend: backend.kind, writable: backend.writable });
     } catch (err) {
       console.error('Group list error:', err);
+      const mapped = backendErrorResponse(err);
+      if (mapped) return res.status(mapped.status).json(mapped.body);
       res.status(500).json({ error: 'Failed to list groups' });
     }
   });
@@ -84,6 +86,8 @@ export function createGroupRoutes(
       });
     } catch (err) {
       console.error('Get group error:', err);
+      const mapped = backendErrorResponse(err);
+      if (mapped) return res.status(mapped.status).json(mapped.body);
       res.status(500).json({ error: 'Failed to get group' });
     }
   });
@@ -142,6 +146,8 @@ export function createGroupRoutes(
       });
     } catch (err) {
       console.error('Create group error:', err);
+      const mapped = backendErrorResponse(err);
+      if (mapped) return res.status(mapped.status).json(mapped.body);
       res.status(500).json({ error: 'Failed to create group' });
     }
   });
@@ -172,6 +178,8 @@ export function createGroupRoutes(
       res.json({ success: true });
     } catch (err) {
       console.error('Update group error:', err);
+      const mapped = backendErrorResponse(err);
+      if (mapped) return res.status(mapped.status).json(mapped.body);
       res.status(500).json({ error: 'Failed to update group' });
     }
   });
@@ -201,6 +209,8 @@ export function createGroupRoutes(
       res.json({ success: true });
     } catch (err) {
       console.error('Delete group error:', err);
+      const mapped = backendErrorResponse(err);
+      if (mapped) return res.status(mapped.status).json(mapped.body);
       res.status(500).json({ error: 'Failed to delete group' });
     }
   });

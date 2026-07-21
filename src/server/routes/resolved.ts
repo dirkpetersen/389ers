@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { DirectoryBackend } from '../directory/backend';
+import { DirectoryBackend , backendErrorResponse } from '../directory/backend';
 import { LdapGroup, ResolvedMember } from '../types/ldap';
 import { requireAuth } from '../middleware/auth';
 
@@ -21,6 +21,8 @@ export function createResolvedRoutes(backend: DirectoryBackend): Router {
       res.json({ members: Array.from(resolved.values()) });
     } catch (err) {
       console.error('Resolve members error:', err);
+      const mapped = backendErrorResponse(err);
+      if (mapped) return res.status(mapped.status).json(mapped.body);
       res.status(500).json({ error: 'Failed to resolve members' });
     }
   });

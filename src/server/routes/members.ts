@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { DirectoryBackend, ReadOnlyBackendError } from '../directory/backend';
+import { DirectoryBackend, ReadOnlyBackendError, backendErrorResponse } from '../directory/backend';
 import { AuthorizationService } from '../auth/authorization';
 import { LdapUser, AddMembersRequest, RemoveMembersRequest } from '../types/ldap';
 import { requireAuth, getLogin, isAdmin } from '../middleware/auth';
@@ -37,6 +37,8 @@ export function createMemberRoutes(
       res.json({ members });
     } catch (err) {
       console.error('List members error:', err);
+      const mapped = backendErrorResponse(err);
+      if (mapped) return res.status(mapped.status).json(mapped.body);
       res.status(500).json({ error: 'Failed to list members' });
     }
   });
@@ -91,6 +93,8 @@ export function createMemberRoutes(
       res.json({ success: true, added, notFound, alreadyMember });
     } catch (err) {
       console.error('Add members error:', err);
+      const mapped = backendErrorResponse(err);
+      if (mapped) return res.status(mapped.status).json(mapped.body);
       res.status(500).json({ error: 'Failed to add members' });
     }
   });
@@ -139,6 +143,8 @@ export function createMemberRoutes(
       res.json({ success: true, removed, notFound: [], notMember });
     } catch (err) {
       console.error('Remove members error:', err);
+      const mapped = backendErrorResponse(err);
+      if (mapped) return res.status(mapped.status).json(mapped.body);
       res.status(500).json({ error: 'Failed to remove members' });
     }
   });

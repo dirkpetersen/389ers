@@ -13,6 +13,9 @@
 .env.local
 *.local
 config/config.yaml
+config/config.ad.yaml
+config/config.*.yaml
+!config/*.yaml.example
 
 # Logs
 *.log

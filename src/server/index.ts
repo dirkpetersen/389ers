@@ -14,6 +14,7 @@ import { AppConfig } from './types/ldap';
 import { DirectoryBackend } from './directory/backend';
 import { NssBackend } from './directory/nss';
 import { LdapBackend } from './directory/ldap-backend';
+import { AdBackend } from './directory/ad-backend';
 
 import { createUserRoutes } from './routes/users';
 import { createGroupRoutes } from './routes/groups';
@@ -28,7 +29,11 @@ const app = express();
 // section at all, which makes that fallback genuinely useful rather than a
 // broken half-start.
 const configDir = path.join(__dirname, '../../config');
-const configPath = path.join(configDir, 'config.yaml');
+// CONFIG_FILE selects an alternate config (absolute, or relative to the repo
+// root) so LDAP, AD, and NSS deployments can keep separate files.
+const configPath = process.env.CONFIG_FILE
+  ? path.resolve(path.join(__dirname, '../..'), process.env.CONFIG_FILE)
+  : path.join(configDir, 'config.yaml');
 const examplePath = path.join(configDir, 'config.yaml.example');
 
 let configSource = configPath;
@@ -55,7 +60,11 @@ if (process.env.LDAP_BASE_DN) {
 
 // DIRECTORY_BACKEND=nss  -> resolve users/groups via getent(1), which follows
 //                           nsswitch.conf (local files, or SSSD against AD).
+//                           Read-only.
 // DIRECTORY_BACKEND=ldap -> bind to 389 DS / OpenLDAP with a service account.
+// DIRECTORY_BACKEND=ad   -> bind to Active Directory. Same transport as ldap,
+//                           but AD schema: sAMAccountName logins, DN-based
+//                           membership, objectClass=group with groupType.
 const backendKind = (process.env.DIRECTORY_BACKEND || 'ldap').toLowerCase();
 
 // AUTH_MODE=local trusts the OS identity of the process owner instead of
@@ -79,18 +88,20 @@ if (backendKind === 'nss') {
     groupPrefix: process.env.NSS_GROUP_PREFIX || '',
   });
 } else {
-  // The LDAP backend needs real bind credentials, which the example config
-  // does not have. Fail loudly rather than emitting confusing bind errors.
+  // Both LDAP-family backends need real bind credentials, which the example
+  // config does not have. Fail loudly rather than emitting confusing bind errors.
   if (usingExampleConfig) {
     console.error(
-      `DIRECTORY_BACKEND=ldap requires real credentials, but no ${configPath} was found.\n` +
-      `Copy config/config.yaml.example to config/config.yaml and fill in your LDAP settings,\n` +
-      `or run the read-only NSS backend with DIRECTORY_BACKEND=nss.`
+      `DIRECTORY_BACKEND=${backendKind} requires real credentials, but no ${configPath} was found.\n` +
+      `Copy an example from config/ and fill in your settings, or run the\n` +
+      `read-only NSS backend with DIRECTORY_BACKEND=nss.`
     );
     process.exit(1);
   }
   ldapClient = LdapClient.getInstance(config.ldap);
-  backend = new LdapBackend(ldapClient, config);
+  backend = backendKind === 'ad'
+    ? new AdBackend(ldapClient, config)
+    : new LdapBackend(ldapClient, config);
 }
 
 const authService = new AuthorizationService(backend, config);
