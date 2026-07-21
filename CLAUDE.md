@@ -128,6 +128,12 @@ NODE_ENV=production DIRECTORY_BACKEND=nss AUTH_MODE=local NSS_GROUP_PREFIX=grp- 
 
 `config/config.yaml` is gitignored (it holds the LDAP bind password), so `src/server/index.ts` falls back to the tracked `config/config.yaml.example` when it is absent. That is sufficient for the NSS backend, which uses nothing from the `ldap:` section. The LDAP backend exits with instructions rather than starting on placeholder credentials. If neither file exists the server exits.
 
+### Sessions
+
+Sessions are persisted to disk by `FileSessionStore` (`src/server/session-store.ts`, one JSON file per session named by a SHA-256 of the session id), **not** kept in express-session's default MemoryStore. MemoryStore drops every session when the process exits, and on a PaaS the process restarts routinely — so each deploy or respawn logged everyone out: the cookie survived, the session behind it did not, and the SPA fell back to the login form. `SESSION_DIR` (default `./.sessions`) must point at storage that outlives a restart.
+
+The app sits behind a TLS-terminating proxy and serves plain HTTP itself, so `app.set('trust proxy', 1)` is required for `cookie.secure: 'auto'` to see `X-Forwarded-Proto` and mark the cookie `Secure` — `auto` keeps the same build working on a plain-HTTP dev box. `sameSite: 'lax'` still sends the cookie on a top-level refresh.
+
 ## Key Configuration
 
 | Setting | Value |

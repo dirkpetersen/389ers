@@ -9,6 +9,7 @@ import { AuthorizationService } from './auth/authorization';
 import { authenticateUser, LdapAuthError, LdapAuthOptions } from './auth/ldap-auth';
 import { initAuditLogger } from './audit/logger';
 import { loadConfig, ldapBackendProblems, productionWarnings } from './config';
+import { FileSessionStore } from './session-store';
 
 import { DirectoryBackend } from './directory/backend';
 import { NssBackend } from './directory/nss';
@@ -150,16 +151,32 @@ declare module 'express-session' {
   }
 }
 
+// The app runs behind a TLS-terminating reverse proxy (Traefik) and speaks
+// plain HTTP itself, so without this every request looks insecure to Express
+// and `cookie.secure: 'auto'` would never mark the session cookie Secure.
+// Trust exactly one hop — the proxy in front of us — so a client cannot forge
+// X-Forwarded-* headers of its own.
+app.set('trust proxy', 1);
+
 app.use(cors({ origin: 'http://localhost:5173', credentials: true }));
 app.use(express.json());
 app.use(session({
+  // Sessions live on disk, not in express-session's default MemoryStore, which
+  // loses every login when the process restarts. See session-store.ts.
+  store: new FileSessionStore(config.server.sessionDir),
   secret: config.server.sessionSecret,
   resave: false,
   saveUninitialized: false,
   cookie: {
     maxAge: config.server.sessionTimeout,
     httpOnly: true,
-    secure: false,
+    // 'auto' marks the cookie Secure exactly when the request arrived over
+    // HTTPS (via the proxy's X-Forwarded-Proto, trusted above), so the same
+    // build works on a plain-HTTP dev box and behind TLS in production.
+    secure: 'auto',
+    // Lax still sends the cookie on top-level navigation to the site, so a
+    // browser refresh keeps the session, while cross-site POSTs do not carry it.
+    sameSite: 'lax',
   },
 }));
 

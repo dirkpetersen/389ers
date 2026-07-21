@@ -18,6 +18,9 @@ config/config.ad.yaml
 config/config.*.yaml
 !config/*.yaml.example
 
+# Persisted login sessions (bearer credentials — never commit)
+/.sessions/
+
 # Logs
 *.log
 permissions-changes.log

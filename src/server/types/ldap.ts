@@ -170,6 +170,8 @@ export interface AppConfig {
     port: number;
     sessionSecret: string;
     sessionTimeout: number;
+    /** Directory holding persisted sessions, so logins survive a restart. */
+    sessionDir: string;
   };
   ldap: LdapConfig;
   groups: GroupsConfig;

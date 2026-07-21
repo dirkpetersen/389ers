@@ -4,6 +4,7 @@ server:
   port: 8088
   sessionSecret: "change-me-in-production"
   sessionTimeout: 3600000  # 1 hour in milliseconds
+  sessionDir: "./.sessions"  # Sessions persist here so a restart keeps users logged in
 
 ldap:
   url: "ldap://localhost:10389"

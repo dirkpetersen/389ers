@@ -108,6 +108,9 @@ function buildConfig(fromYaml: Partial<AppConfig>, yamlSource: string | null): L
       port: int('PORT') ?? y.server?.port ?? 8088,
       sessionSecret: secret('SESSION_SECRET') ?? y.server?.sessionSecret ?? 'change-me-in-production',
       sessionTimeout: int('SESSION_TIMEOUT') ?? y.server?.sessionTimeout ?? 3600000,
+      // Where logged-in sessions are persisted so they survive a restart.
+      // Relative to the working directory, like audit.logFile.
+      sessionDir: str('SESSION_DIR') ?? y.server?.sessionDir ?? './.sessions',
     },
     ldap: {
       url: str('LDAP_URL') ?? y.ldap?.url ?? '',
